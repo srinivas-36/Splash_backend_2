@@ -48,6 +48,7 @@ ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '[::1]']
 # user = os.environ["MONGO_USER"]
 # password = os.environ["MONGO_PASSWORD"]
 uri = f"mongodb+srv://bhargavraavi4444_db_user:bhargav4444@cluster0.5dfeawc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# uri = f"mongodb+srv://swethab9392_db_user:Swetha2003@cluster0.qtnsdub.mongodb.net/?appName=Cluster0"
 
 # print("user", user)
 # print("passsweord", password)

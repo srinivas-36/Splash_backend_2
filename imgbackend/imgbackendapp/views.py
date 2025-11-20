@@ -793,6 +793,7 @@ from django.http import JsonResponse, HttpResponseBadRequest
 from common.middleware import authenticate
 from urllib.request import urlopen
 from bson import ObjectId
+import re
 
 # Check for Gemini SDK
 try:
@@ -1670,6 +1671,7 @@ def generate_campaign_shot_advanced(request):
                 default_prompt,
                 user_prompt=prompt
             )
+        print("user_prompt : ", user_prompt)
 
         parts.append({"text": user_prompt})
 
@@ -1734,6 +1736,228 @@ def generate_campaign_shot_advanced(request):
         traceback.print_exc()
         return JsonResponse({"status": "error", "message": str(e)}, status=500)
 
+# @csrf_exempt
+# @authenticate
+# def generate_campaign_shot_advanced(request):
+#     if request.method != 'POST':
+#         return JsonResponse({"error": "Invalid request method. Use POST."}, status=405)
+
+#     user = request.user
+#     user_id = str(user.id)
+
+#     try:
+#         # ==========================
+#         # INPUT EXTRACTION
+#         # ==========================
+#         model_type = request.POST.get('model_type')
+#         model_img = request.FILES.get(
+#             'model_image') if model_type == 'real_model' else None
+#         ornaments = request.FILES.getlist('ornament_images')
+#         ornament_names = request.POST.getlist('ornament_names')
+#         theme_images = request.FILES.getlist('theme_images')
+#         prompt = request.POST.get('prompt', '')
+
+#         # ==========================
+#         # VALIDATION
+#         # ==========================
+#         if not ornaments:
+#             return JsonResponse({"error": "Please upload at least one ornament image."}, status=400)
+#         if model_type == 'real_model' and not model_img:
+#             return JsonResponse({"error": "Please upload a model image for Real Model option."}, status=400)
+
+#         # ==========================
+#         # ORNAMENT UPLOAD + ENCODE
+#         # ==========================
+#         ornament_urls = []
+#         ornament_b64_list = []
+
+#         for idx, ornament in enumerate(ornaments):
+#             bytes_data = ornament.read()
+#             ornament.seek(0)
+
+#             upload = cloudinary.uploader.upload(
+#                 ornament,
+#                 folder="ornaments",
+#                 overwrite=True
+#             )
+
+#             ornament_urls.append(upload["secure_url"])
+
+#             name = ornament_names[idx] if idx < len(
+#                 ornament_names) else f"Ornament {idx+1}"
+#             ornament_b64_list.append({
+#                 "name": name,
+#                 "data": base64.b64encode(bytes_data).decode("utf-8")
+#             })
+
+#         # ==========================
+#         # MODEL UPLOAD + ENCODE
+#         # ==========================
+#         model_url = None
+#         model_b64 = None
+
+#         if model_img:
+#             model_bytes = model_img.read()
+#             model_img.seek(0)
+
+#             upload_model = cloudinary.uploader.upload(
+#                 model_img,
+#                 folder="models",
+#                 overwrite=True
+#             )
+#             model_url = upload_model["secure_url"]
+#             model_b64 = base64.b64encode(model_bytes).decode("utf-8")
+
+#         # ==========================
+#         # THEME ENCODE
+#         # ==========================
+#         theme_b64_list = []
+#         for theme in theme_images:
+#             t_bytes = theme.read()
+#             theme.seek(0)
+#             theme_b64_list.append(base64.b64encode(t_bytes).decode("utf-8"))
+
+#         # ==========================
+#         # GEMINI SETUP
+#         # ==========================
+#         if not settings.GOOGLE_API_KEY:
+#             raise Exception("GOOGLE_API_KEY not configured")
+
+#         if not has_genai:
+#             raise Exception("Gemini SDK not installed")
+
+#         client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+#         model_name = "gemini-2.5-flash-image-preview"
+
+#         parts = []
+
+#         # Model
+#         if model_b64:
+#             parts.append(
+#                 {"inline_data": {"mime_type": "image/jpeg", "data": model_b64}})
+#             parts.append({"text": "Reference for the real model."})
+
+#         # Ornaments
+#         for orn in ornament_b64_list:
+#             parts.append(
+#                 {"inline_data": {"mime_type": "image/jpeg", "data": orn["data"]}})
+#             parts.append({"text": f"Reference for ornament: {orn['name']}"})
+
+#         # Themes
+#         for t in theme_b64_list:
+#             parts.append(
+#                 {"inline_data": {"mime_type": "image/jpeg", "data": t}})
+#             parts.append(
+#                 {"text": "Reference for background or theme styling."})
+
+#         # Prompt builder
+#         from probackendapp.prompt_initializer import get_prompt_from_db
+
+#         if model_type == "real_model":
+#             default_prompt = (
+#                 "Generate a realistic image of the uploaded real model wearing all the uploaded ornaments. "
+#                 "Preserve the model’s face and natural pose. Make a subtle smile. "
+#                 f"Campaign instructions: {prompt}"
+#             )
+#             final_prompt = get_prompt_from_db(
+#                 "images_campaign_shot_real", default_prompt, user_prompt=prompt)
+#         else:
+#             default_prompt = (
+#                 "Generate a high-quality campaign image of an AI model wearing the uploaded ornaments. "
+#                 "Use realistic lighting and cohesive fashion aesthetics. "
+#                 f"Campaign instructions: {prompt}"
+#             )
+#             final_prompt = get_prompt_from_db(
+#                 "images_campaign_shot_ai", default_prompt, user_prompt=prompt)
+
+#         parts.append({"text": final_prompt})
+
+#         contents = [{"parts": parts}]
+
+#         config = types.GenerateContentConfig(
+#             response_modalities=[types.Modality.IMAGE]
+#         )
+
+#         # ==========================
+#         # GEMINI IMAGE GENERATION
+#         # ==========================
+#         resp = client.models.generate_content(
+#             model=model_name, contents=contents, config=config
+#         )
+
+#         candidate = resp.candidates[0]
+
+#         generated_bytes = None
+#         for part in candidate.content.parts:
+#             if getattr(part, "inline_data", None):
+#                 raw = part.inline_data.data
+#                 generated_bytes = raw if isinstance(
+#                     raw, bytes) else base64.b64decode(raw)
+#                 break
+
+#         if not generated_bytes:
+#             raise Exception("No image returned from Gemini")
+
+#         # ==========================
+#         # CLOUDINARY ENHANCEMENT (SIGNED URL)
+#         # ==========================
+#         buf = BytesIO(generated_bytes)
+#         buf.seek(0)
+
+#         upload_raw = cloudinary.uploader.upload(
+#             buf,
+#             folder="campaign_shots/original",
+#             overwrite=True,
+#             resource_type="image"
+#         )
+
+#         public_id = upload_raw["public_id"]
+
+#         # Build final enhanced URL (SIGNED)
+#         generated_url = cloudinary.CloudinaryImage(public_id).build_url(
+#             transformation=[
+#                 {"quality": "auto:best"},
+#                 {"fetch_format": "auto"},
+#                 {"effect": "sharpen:50"},
+#                 {"crop": "limit", "width": 2400}
+#             ],
+#             sign_url=True
+#         )
+
+#         # ==========================
+#         # SAVE TO MONGODB
+#         # ==========================
+#         ornament_doc = OrnamentMongo(
+#             prompt=prompt,
+#             type="campaign_shot_advanced",
+#             model_image_url=model_url,
+#             uploaded_ornament_urls=ornament_urls,
+#             generated_image_url=generated_url,
+#             uploaded_image_path="Multiple ornaments",
+#             generated_image_path=f"media/generated/campaign_{len(ornaments)}.jpg",
+#             user_id=user_id,
+#             original_prompt=prompt
+#         )
+#         ornament_doc.save()
+
+#         # ==========================
+#         # RESPONSE
+#         # ==========================
+#         return JsonResponse({
+#             "status": "success",
+#             "message": "Campaign shot generated and enhanced successfully.",
+#             "generated_image_url": generated_url,
+#             "model_image_url": model_url,
+#             "uploaded_ornament_urls": ornament_urls,
+#             "prompt": prompt,
+#             "mongo_id": str(ornament_doc.id),
+#             "type": "campaign_shot_advanced"
+#         }, status=200)
+
+#     except Exception as e:
+#         traceback.print_exc()
+#         return JsonResponse({"status": "error", "message": str(e)}, status=500)
+
 
 @csrf_exempt
 @authenticate
@@ -1763,12 +1987,21 @@ def regenerate_image(request):
         if not new_prompt:
             return JsonResponse({"error": "New prompt is required"}, status=400)
 
+        # Validate MongoDB ObjectId format before attempting to use it
+        # ObjectId must be exactly 24 hex characters
+        object_id_pattern = re.compile(r'^[0-9a-fA-F]{24}$')
+        if not object_id_pattern.match(image_id):
+            return JsonResponse({
+                "error": f"Invalid image_id: '{image_id}' is not a valid MongoDB ObjectId. It must be a 24-character hex string. Please ensure you are using mongo_id, not ornament_id."
+            }, status=400)
+
         # Fetch the previous image record from MongoDB
         try:
             prev_doc = OrnamentMongo.objects.get(id=ObjectId(image_id))
         except OrnamentMongo.DoesNotExist:
             return JsonResponse({"error": "Image record not found"}, status=404)
         except Exception as e:
+            # This should rarely happen now due to format validation above
             return JsonResponse({"error": f"Invalid image_id: {str(e)}"}, status=400)
 
         # Verify that the image belongs to the user (security check)
