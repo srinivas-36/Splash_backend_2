@@ -1,6 +1,7 @@
 from django.http import JsonResponse
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
 import json
 from mongoengine.errors import NotUniqueError
 from .models import User, Role
@@ -30,10 +31,9 @@ def generate_jwt(user):
 # =====================
 # User Registration
 # =====================
+@api_view(['POST'])
 @csrf_exempt
 def register_user(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=405)
 
     try:
         data = json.loads(request.body)
@@ -43,7 +43,7 @@ def register_user(request):
         username = data.get("username")
 
         if not email or not password:
-            return JsonResponse({"error": "Email and password required"}, status=400)
+            return Response({"error": "Email and password required"}, status=400)
 
         # Hash password
         hashed_pw = make_password(password)
@@ -76,7 +76,7 @@ def register_user(request):
         )
 
     except NotUniqueError:
-        return JsonResponse({"error": "Email or username already exists"}, status=400)
+        return Response({"error": "Email or username already exists"}, status=400)
     except Exception as e:
         print(e)
         return JsonResponse({"error": str(e)}, status=500)
@@ -85,10 +85,9 @@ def register_user(request):
 # =====================
 # User Login
 # =====================
+@api_view(['POST'])
 @csrf_exempt
 def login_user(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=405)
 
     try:
         data = json.loads(request.body)
@@ -96,7 +95,7 @@ def login_user(request):
         password = data.get("password")
 
         if not email or not password:
-            return JsonResponse({"error": "Email and password required"}, status=400)
+            return Response({"error": "Email and password required"}, status=400)
 
         user = User.objects(email=email).first()
         if not user or not check_password(password, user.password):
@@ -172,14 +171,14 @@ def invite_user(request):
 # =====================
 # Get User Profile
 # =====================
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def get_user_profile(request):
     """Get current user's profile information"""
     try:
         user = request.user
-        
+
         return JsonResponse({
             "success": True,
             "user": {
@@ -199,30 +198,30 @@ def get_user_profile(request):
 # =====================
 # Update User Profile
 # =====================
+@api_view(['PUT'])
 @csrf_exempt
-@require_http_methods(["PUT"])
 @authenticate
 def update_user_profile(request):
     """Update current user's profile information"""
     try:
         user = request.user
         data = json.loads(request.body)
-        
+
         # Update allowed fields
         if 'full_name' in data:
             user.full_name = data['full_name']
-        
+
         if 'username' in data:
             # Check if username is unique (if changed)
             existing_user = User.objects(username=data['username']).first()
             if existing_user and str(existing_user.id) != str(user.id):
-                return JsonResponse({"error": "Username already exists"}, status=400)
+                return Response({"error": "Username already exists"}, status=400)
             user.username = data['username']
-        
+
         # Update timestamp
         user.updated_at = datetime.datetime.utcnow()
         user.save()
-        
+
         return JsonResponse({
             "success": True,
             "message": "Profile updated successfully",
@@ -237,6 +236,6 @@ def update_user_profile(request):
             }
         }, status=200)
     except NotUniqueError:
-        return JsonResponse({"error": "Username already exists"}, status=400)
+        return Response({"error": "Username already exists"}, status=400)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)

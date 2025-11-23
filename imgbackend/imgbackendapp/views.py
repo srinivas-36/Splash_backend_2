@@ -790,6 +790,8 @@ import os
 import time
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponseBadRequest
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
 from common.middleware import authenticate
 from urllib.request import urlopen
 from bson import ObjectId
@@ -804,466 +806,54 @@ except ImportError:
     has_genai = False
 
 
+@api_view(['POST'])
 @csrf_exempt
 @authenticate
 def upload_ornament(request):
-    if request.method == "POST":
-        # Get user from authentication middleware
-        user = request.user
-        user_id = str(user.id)
+    # Get user from authentication middleware
+    user = request.user
+    user_id = str(user.id)
 
-        form = OrnamentForm(request.POST, request.FILES)
-        if form.is_valid():
-            ornament = form.save()
-            try:
-                bg_color = request.POST.get(
-                    "background_color", "white").strip()
-                extra_prompt = request.POST.get("prompt", "").strip()
-
-                with open(ornament.image.path, "rb") as f:
-                    img_bytes = f.read()
-                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-
-                generated_bytes = None
-                # Get prompt from database
-                from probackendapp.prompt_initializer import get_prompt_from_db
-                extra_prompt_text = f" {extra_prompt}" if extra_prompt else ""
-                default_prompt = f"Remove the background from this ornament image and replace it with a plain {bg_color} background.{extra_prompt_text}"
-                text_prompt = get_prompt_from_db(
-                    'images_white_background',
-                    default_prompt,
-                    bg_color=bg_color,
-                    extra_prompt=extra_prompt_text
-                )
-
-                if has_genai:
-                    if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == "your_api_key_here":
-                        raise Exception("GOOGLE_API_KEY not configured")
-
-                    client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-                    model_name = "gemini-2.5-flash-image-preview"
-
-                    contents = [
-                        {
-                            "parts": [
-                                {"inline_data": {
-                                    "mime_type": "image/jpeg", "data": img_b64}},
-                                {"text": text_prompt}
-                            ]
-                        }
-                    ]
-
-                    config = types.GenerateContentConfig(
-                        response_modalities=[types.Modality.IMAGE]
-                    )
-
-                    resp = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=config
-                    )
-
-                    candidates = getattr(resp, "candidates", [])
-                    for cand in candidates:
-                        content = getattr(cand, "content", [])
-                        for part in content.parts if hasattr(content, "parts") else []:
-                            if getattr(part, "inline_data", None):
-                                data = part.inline_data.data
-                                generated_bytes = data if isinstance(
-                                    data, bytes) else base64.b64decode(data)
-                                break
-                        if generated_bytes:
-                            break
-
-                    if not generated_bytes:
-                        messages.warning(
-                            request, "Gemini did not return an image. Using local fallback.")
-
-                # ---- Fallback ----
-                if not generated_bytes:
-                    original = Image.open(ornament.image.path).convert("RGB")
-                    img_array = np.array(original)
-                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-                    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-                    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-                    _, thresh = cv2.threshold(
-                        blur, 240, 255, cv2.THRESH_BINARY_INV)
-                    kernel = np.ones((3, 3), np.uint8)
-                    thresh = cv2.morphologyEx(
-                        thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-                    thresh = cv2.morphologyEx(
-                        thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-                    contours, _ = cv2.findContours(
-                        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if contours:
-                        largest_contour = max(contours, key=cv2.contourArea)
-                        mask = np.zeros_like(gray)
-                        cv2.drawContours(mask, [largest_contour], -1, 255, -1)
-                        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-                        rgba_array = np.dstack((img_array, mask))
-                        transparent_img = Image.fromarray(rgba_array, 'RGBA')
-                        bg = Image.new("RGB", original.size, bg_color)
-                        bg.paste(transparent_img,
-                                 mask=transparent_img.split()[3])
-                        buf = BytesIO()
-                        bg.save(buf, format="JPEG", quality=95)
-                        generated_bytes = buf.getvalue()
-                    else:
-                        raise Exception(
-                            "Could not extract ornament using fallback method.")
-
-                # ---- Upload original and generated to Cloudinary ----
-                ornament_buf = BytesIO(img_bytes)
-                ornament_buf.seek(0)
-                upload_orig = cloudinary.uploader.upload(
-                    ornament_buf,
-                    folder="ornaments",
-                    public_id=f"ornament_original_{ornament.id}",
-                    overwrite=True
-                )
-                uploaded_image_url = upload_orig["secure_url"]
-
-                buf = BytesIO(generated_bytes)
-                buf.seek(0)
-                upload_gen = cloudinary.uploader.upload(
-                    buf,
-                    folder="ornaments",
-                    public_id=f"ornament_generated_{ornament.id}",
-                    overwrite=True
-                )
-                generated_image_url = upload_gen["secure_url"]
-
-                # ---- Save in MongoDB ----
-                filename = f"{ornament.id}_generated.jpg"
-                ornament_doc = OrnamentMongo(
-                    prompt=text_prompt,
-                    uploaded_image_url=uploaded_image_url,
-                    generated_image_url=generated_image_url,
-                    uploaded_image_path=ornament.image.path,
-                    generated_image_path=filename,
-                    type="white_background",
-                    user_id=user_id,
-                    original_prompt=text_prompt
-
-                )
-                ornament_doc.save()
-
-                # Track image generation in history
-                try:
-                    from probackendapp.history_utils import track_image_generation
-                    track_image_generation(
-                        user_id=user_id,
-                        image_type="white_background",
-                        image_url=generated_image_url,
-                        prompt=text_prompt,
-                        local_path=filename,
-                        metadata={
-                            "uploaded_image_url": uploaded_image_url,
-                            "background_color": bg_color,
-                            "extra_prompt": extra_prompt
-                        }
-                    )
-                except Exception as history_error:
-                    print(
-                        f"Error tracking image generation history: {history_error}")
-
-                # ---- Save locally in Django model ----
-                ornament.generated_image.save(
-                    filename, ContentFile(generated_bytes), save=True)
-
-                return JsonResponse({
-                    "success": True,
-                    "message": "Image generated successfully",
-                    "uploaded_image_url": uploaded_image_url,
-                    "generated_image_url": generated_image_url,
-                    "prompt": text_prompt,
-                    "ornament_id": ornament.id,
-                    "type": "white_background"
-                })
-
-            except Exception as e:
-                traceback.print_exc()
-                return JsonResponse({"success": False, "error": str(e)})
-
-        else:
-            print("Form errors:", form.errors)
-            return JsonResponse({"success": False, "error": "Invalid form submission"})
-
-    return JsonResponse({"success": False, "error": "Invalid request method"})
-
-
-@csrf_exempt
-@authenticate
-def change_background(request):
-    if request.method == "POST":
-        # Get user from authentication middleware
-        user = request.user
-        user_id = str(user.id)
-
-        print("POST keys:", request.POST.keys())
-        print("FILES keys:", request.FILES.keys())
-        form = BackgroundChangeForm(request.POST, request.FILES)
-        if form.is_valid():
-            ornament = form.cleaned_data['ornament_image']
-            background = form.cleaned_data['background_image']
-            bg_color = form.cleaned_data.get('background_color')
-            prompt = form.cleaned_data.get('prompt', '')
-
-            try:
-                upload_dir = os.path.join(
-                    settings.MEDIA_ROOT, "uploaded_ornaments")
-                os.makedirs(upload_dir, exist_ok=True)
-                local_uploaded_path = os.path.join(upload_dir, ornament.name)
-
-                with open(local_uploaded_path, "wb+") as dest:
-                    for chunk in ornament.chunks():
-                        dest.write(chunk)
-
-                uploaded_result = cloudinary.uploader.upload(
-                    local_uploaded_path,
-                    folder="ornaments_originals",
-                    public_id=f"ornament_original_{os.path.splitext(ornament.name)[0]}",
-                    overwrite=True
-                )
-                uploaded_url = uploaded_result["secure_url"]
-
-                ornament_img = Image.open(local_uploaded_path).convert("RGB")
-                buf_ornament = BytesIO()
-                ornament_img.save(buf_ornament, format="JPEG")
-                img_b64 = base64.b64encode(
-                    buf_ornament.getvalue()).decode("utf-8")
-
-                if background:
-                    bg_img = Image.open(background).convert("RGB")
-                    buf_bg = BytesIO()
-                    bg_img.save(buf_bg, format="JPEG")
-                    bg_b64 = base64.b64encode(
-                        buf_bg.getvalue()).decode("utf-8")
-                else:
-                    bg_b64 = None
-                    # Build final prompt using database prompts
-                from probackendapp.prompt_initializer import get_prompt_from_db
-                user_prompt = prompt.strip()
-
-                if bg_color:
-                    color_prompt = get_prompt_from_db(
-                        'images_background_change_with_color',
-                        f" The background should be {bg_color}, but make sure to highlight the ornament and make it stand out and the background color should be the same as the {bg_color}.",
-                        bg_color=bg_color
-                    )
-                    final_prompt = user_prompt + color_prompt
-                else:
-                    default_prompt = get_prompt_from_db(
-                        'images_background_change_default',
-                        " Change only the background without modifying the ornament."
-                    )
-                    final_prompt = user_prompt + \
-                        (" " + default_prompt if user_prompt else default_prompt)
-
-                base_prompt = get_prompt_from_db(
-                    'images_background_change_base',
-                    "Change the background of this ornament. {final_prompt}",
-                    final_prompt=final_prompt
-                )
-
-                generated_bytes = None
-                if has_genai:
-                    client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-                    model_name = "gemini-2.5-flash-image-preview"
-
-                    contents = [
-                        {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
-                        {"text": base_prompt}
-                    ]
-                    if bg_b64:
-                        contents.append(
-                            {"inline_data": {"mime_type": "image/jpeg", "data": bg_b64}})
-
-                    config = types.GenerateContentConfig(
-                        response_modalities=[types.Modality.IMAGE]
-                    )
-
-                    resp = client.models.generate_content(
-                        model=model_name, contents=contents, config=config
-                    )
-                    candidate = resp.candidates[0]
-                    for part in candidate.content.parts:
-                        if part.inline_data:
-                            data = part.inline_data.data
-                            generated_bytes = data if isinstance(
-                                data, bytes) else base64.b64decode(data)
-                            break
-                    if not generated_bytes:
-                        raise Exception(
-                            "Gemini response had no image inline_data")
-                else:
-                    if bg_b64:
-                        bg_img = Image.open(
-                            BytesIO(base64.b64decode(bg_b64))).convert("RGB")
-                        bg_img = bg_img.resize(ornament_img.size)
-                    else:
-                        bg_img = Image.new(
-                            "RGB", ornament_img.size, bg_color or (255, 255, 255))
-                    bg_img.paste(ornament_img, (0, 0),
-                                 ornament_img.convert("RGBA"))
-                    buf = BytesIO()
-                    bg_img.save(buf, format="JPEG", quality=95)
-                    generated_bytes = buf.getvalue()
-
-                gen_dir = os.path.join(
-                    settings.MEDIA_ROOT, "generated_ornaments")
-                os.makedirs(gen_dir, exist_ok=True)
-                local_generated_path = os.path.join(
-                    gen_dir, f"generated_{ornament.name}")
-                with open(local_generated_path, "wb") as f:
-                    f.write(generated_bytes)
-
-                upload_result = cloudinary.uploader.upload(
-                    local_generated_path,
-                    folder="ornaments_bg_change",
-                    public_id=f"ornament_bg_{os.path.splitext(ornament.name)[0]}",
-                    overwrite=True
-                )
-                generated_url = upload_result['secure_url']
-
-                ornament_doc = OrnamentMongo(
-                    prompt=prompt,
-                    uploaded_image_url=uploaded_url,
-                    generated_image_url=generated_url,
-                    uploaded_image_path=local_uploaded_path,
-                    generated_image_path=local_generated_path,
-                    type="background_change",
-                    user_id=user_id,
-                    original_prompt=prompt
-                )
-                ornament_doc.save()
-
-                return JsonResponse({
-                    "success": True,
-                    "message": "Background changed successfully",
-                    "uploaded_image_url": uploaded_url,
-                    "generated_image_url": generated_url,
-                    "prompt": prompt,
-                    "mongo_id": str(ornament_doc.id),
-                    "type": "background_change"
-                })
-
-            except Exception as e:
-                traceback.print_exc()
-                return JsonResponse({"success": False, "error": str(e)})
-
-        else:
-            return JsonResponse({"success": False, "error": "Invalid form data"})
-
-    return JsonResponse({"success": False, "error": "Invalid request method"})
-
-
-@csrf_exempt
-@authenticate
-def generate_model_with_ornament(request):
-    if request.method == 'POST':
-        # Get user from authentication middleware
-        user = request.user
-        user_id = str(user.id)
-
+    form = OrnamentForm(request.POST, request.FILES)
+    if form.is_valid():
+        ornament = form.save()
         try:
-            ornament_img = request.FILES.get('ornament_image')
-            pose_img = request.FILES.get('pose_style')
-            prompt = request.POST.get('prompt', '')
-            print(prompt)
-            measurements = request.POST.get('measurements', '')
-            ornament_type = request.POST.get('ornament_type', '')
-            ornament_measurements = request.POST.get(
-                'ornament_measurements', '{}')
-            print(ornament_type, ornament_measurements)
+            bg_color = request.POST.get(
+                "background_color", "white").strip()
+            extra_prompt = request.POST.get("prompt", "").strip()
 
-            if not ornament_img:
-                return JsonResponse({"error": "Please upload an ornament image."}, status=400)
-
-            # STEP 1: Save ornament locally
-            upload_dir = os.path.join(
-                settings.MEDIA_ROOT, "uploaded_ornaments")
-            os.makedirs(upload_dir, exist_ok=True)
-            local_uploaded_path = os.path.join(upload_dir, ornament_img.name)
-            with open(local_uploaded_path, "wb+") as dest:
-                for chunk in ornament_img.chunks():
-                    dest.write(chunk)
-
-            # STEP 2: Upload ornament to Cloudinary
-            uploaded_result = cloudinary.uploader.upload(
-                local_uploaded_path,
-                folder="ornaments_originals",
-                public_id=f"ornament_original_{os.path.splitext(ornament_img.name)[0]}",
-                overwrite=True
-            )
-            uploaded_url = uploaded_result["secure_url"]
-
-            # Convert uploaded images to base64
-            ornament_b64 = base64.b64encode(
-                open(local_uploaded_path, "rb").read()).decode("utf-8")
-            pose_b64 = None
-            if pose_img:
-                pose_b64 = base64.b64encode(pose_img.read()).decode('utf-8')
-
-            if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == 'your_api_key_here':
-                raise Exception("GOOGLE_API_KEY not configured")
+            with open(ornament.image.path, "rb") as f:
+                img_bytes = f.read()
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
 
             generated_bytes = None
+            # Get prompt from database
+            from probackendapp.prompt_initializer import get_prompt_from_db
+            extra_prompt_text = f" {extra_prompt}" if extra_prompt else ""
+            default_prompt = f"Remove the background from this ornament image and replace it with a plain {bg_color} background.{extra_prompt_text}"
+            text_prompt = get_prompt_from_db(
+                'images_white_background',
+                default_prompt,
+                bg_color=bg_color,
+                extra_prompt=extra_prompt_text
+            )
 
             if has_genai:
+                if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == "your_api_key_here":
+                    raise Exception("GOOGLE_API_KEY not configured")
+
                 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
                 model_name = "gemini-2.5-flash-image-preview"
 
                 contents = [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": ornament_b64}},
+                    {
+                        "parts": [
+                            {"inline_data": {
+                                "mime_type": "image/jpeg", "data": img_b64}},
+                            {"text": text_prompt}
+                        ]
+                    }
                 ]
-                if pose_b64:
-                    contents.append(
-                        {"inline_data": {"mime_type": "image/jpeg", "data": pose_b64}}
-                    )
-
-                # Parse ornament measurements
-                import json
-                try:
-                    ornament_measurements_dict = json.loads(
-                        ornament_measurements) if ornament_measurements else {}
-                except:
-                    ornament_measurements_dict = {}
-
-                # Build ornament type and measurements description
-                ornament_description = ""
-                if ornament_type:
-                    ornament_description += f"This is a {ornament_type}. "
-                if ornament_measurements_dict:
-                    measurements_text = ", ".join(
-                        [f"{key}: {value}" for key, value in ornament_measurements_dict.items() if value])
-                    if measurements_text:
-                        ornament_description += f"Specific measurements: {measurements_text}. "
-
-                # Get prompt from database
-                from probackendapp.prompt_initializer import get_prompt_from_db
-                measurements_text = f"measurements: {measurements}. " if measurements else ""
-                default_prompt = (
-                    "Generate a close-up, high-fashion portrait of an elegant Indian woman "
-                    "wearing this 100% real accurate uploaded ornament. Focus tightly on the neckline and jewelry area according to the ornament. "
-                    "Ensure the jewelry fits naturally and realistically on the model. "
-                    "Lighting should be soft and natural, highlighting the sparkle of the jewelry and the model's features. "
-                    "Use a shallow depth of field with a softly blurred background that hints at an elegant setting. "
-                    "Do not include any watermark, text, or unnatural effects. "
-                    f"{ornament_description}"
-                    f"{measurements_text}Make sure to follow the measurements strictly.\n"
-                    f"mandatory consideration details: {prompt}"
-                )
-                user_prompt = get_prompt_from_db(
-                    'images_model_with_ornament',
-                    default_prompt,
-                    ornament_description=ornament_description,
-                    measurements_text=measurements_text,
-                    user_prompt=prompt
-                )
-                print("user_prompt", user_prompt)
-
-                contents.append({"text": user_prompt})
 
                 config = types.GenerateContentConfig(
                     response_modalities=[types.Modality.IMAGE]
@@ -1275,75 +865,482 @@ def generate_model_with_ornament(request):
                     config=config
                 )
 
+                candidates = getattr(resp, "candidates", [])
+                for cand in candidates:
+                    content = getattr(cand, "content", [])
+                    for part in content.parts if hasattr(content, "parts") else []:
+                        if getattr(part, "inline_data", None):
+                            data = part.inline_data.data
+                            generated_bytes = data if isinstance(
+                                data, bytes) else base64.b64decode(data)
+                            break
+                    if generated_bytes:
+                        break
+
+                if not generated_bytes:
+                    messages.warning(
+                        request, "Gemini did not return an image. Using local fallback.")
+
+            # ---- Fallback ----
+            if not generated_bytes:
+                original = Image.open(ornament.image.path).convert("RGB")
+                img_array = np.array(original)
+                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+                blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                _, thresh = cv2.threshold(
+                    blur, 240, 255, cv2.THRESH_BINARY_INV)
+                kernel = np.ones((3, 3), np.uint8)
+                thresh = cv2.morphologyEx(
+                    thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+                thresh = cv2.morphologyEx(
+                    thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+                contours, _ = cv2.findContours(
+                    thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    mask = np.zeros_like(gray)
+                    cv2.drawContours(mask, [largest_contour], -1, 255, -1)
+                    mask = cv2.GaussianBlur(mask, (5, 5), 0)
+                    rgba_array = np.dstack((img_array, mask))
+                    transparent_img = Image.fromarray(rgba_array, 'RGBA')
+                    bg = Image.new("RGB", original.size, bg_color)
+                    bg.paste(transparent_img,
+                             mask=transparent_img.split()[3])
+                    buf = BytesIO()
+                    bg.save(buf, format="JPEG", quality=95)
+                    generated_bytes = buf.getvalue()
+                else:
+                    raise Exception(
+                        "Could not extract ornament using fallback method.")
+
+            # ---- Upload original and generated to Cloudinary ----
+            ornament_buf = BytesIO(img_bytes)
+            ornament_buf.seek(0)
+            upload_orig = cloudinary.uploader.upload(
+                ornament_buf,
+                folder="ornaments",
+                public_id=f"ornament_original_{ornament.id}",
+                overwrite=True
+            )
+            uploaded_image_url = upload_orig["secure_url"]
+
+            buf = BytesIO(generated_bytes)
+            buf.seek(0)
+            upload_gen = cloudinary.uploader.upload(
+                buf,
+                folder="ornaments",
+                public_id=f"ornament_generated_{ornament.id}",
+                overwrite=True
+            )
+            generated_image_url = upload_gen["secure_url"]
+
+            # ---- Save in MongoDB ----
+            filename = f"{ornament.id}_generated.jpg"
+            ornament_doc = OrnamentMongo(
+                prompt=text_prompt,
+                uploaded_image_url=uploaded_image_url,
+                generated_image_url=generated_image_url,
+                uploaded_image_path=ornament.image.path,
+                generated_image_path=filename,
+                type="white_background",
+                user_id=user_id,
+                original_prompt=text_prompt
+
+            )
+            ornament_doc.save()
+
+            # Track image generation in history
+            try:
+                from probackendapp.history_utils import track_image_generation
+                track_image_generation(
+                    user_id=user_id,
+                    image_type="white_background",
+                    image_url=generated_image_url,
+                    prompt=text_prompt,
+                    local_path=filename,
+                    metadata={
+                        "uploaded_image_url": uploaded_image_url,
+                        "background_color": bg_color,
+                        "extra_prompt": extra_prompt
+                    }
+                )
+            except Exception as history_error:
+                print(
+                    f"Error tracking image generation history: {history_error}")
+
+            # ---- Save locally in Django model ----
+            ornament.generated_image.save(
+                filename, ContentFile(generated_bytes), save=True)
+
+            return JsonResponse({
+                "success": True,
+                "message": "Image generated successfully",
+                "uploaded_image_url": uploaded_image_url,
+                "generated_image_url": generated_image_url,
+                "prompt": text_prompt,
+                "ornament_id": ornament.id,
+                "type": "white_background"
+            })
+
+        except Exception as e:
+            traceback.print_exc()
+            return JsonResponse({"success": False, "error": str(e)})
+
+    else:
+        print("Form errors:", form.errors)
+        return JsonResponse({"success": False, "error": "Invalid form submission"})
+
+
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
+def change_background(request):
+    # Get user from authentication middleware
+    user = request.user
+    user_id = str(user.id)
+
+    print("POST keys:", request.POST.keys())
+    print("FILES keys:", request.FILES.keys())
+    form = BackgroundChangeForm(request.POST, request.FILES)
+    if form.is_valid():
+        ornament = form.cleaned_data['ornament_image']
+        background = form.cleaned_data['background_image']
+        bg_color = form.cleaned_data.get('background_color')
+        prompt = form.cleaned_data.get('prompt', '')
+
+        try:
+            upload_dir = os.path.join(
+                settings.MEDIA_ROOT, "uploaded_ornaments")
+            os.makedirs(upload_dir, exist_ok=True)
+            local_uploaded_path = os.path.join(upload_dir, ornament.name)
+
+            with open(local_uploaded_path, "wb+") as dest:
+                for chunk in ornament.chunks():
+                    dest.write(chunk)
+
+            uploaded_result = cloudinary.uploader.upload(
+                local_uploaded_path,
+                folder="ornaments_originals",
+                public_id=f"ornament_original_{os.path.splitext(ornament.name)[0]}",
+                overwrite=True
+            )
+            uploaded_url = uploaded_result["secure_url"]
+
+            ornament_img = Image.open(local_uploaded_path).convert("RGB")
+            buf_ornament = BytesIO()
+            ornament_img.save(buf_ornament, format="JPEG")
+            img_b64 = base64.b64encode(
+                buf_ornament.getvalue()).decode("utf-8")
+
+            if background:
+                bg_img = Image.open(background).convert("RGB")
+                buf_bg = BytesIO()
+                bg_img.save(buf_bg, format="JPEG")
+                bg_b64 = base64.b64encode(
+                    buf_bg.getvalue()).decode("utf-8")
+            else:
+                bg_b64 = None
+                # Build final prompt using database prompts
+            from probackendapp.prompt_initializer import get_prompt_from_db
+            user_prompt = prompt.strip()
+
+            if bg_color:
+                color_prompt = get_prompt_from_db(
+                    'images_background_change_with_color',
+                    f" The background should be {bg_color}, but make sure to highlight the ornament and make it stand out and the background color should be the same as the {bg_color}.",
+                    bg_color=bg_color
+                )
+                final_prompt = user_prompt + color_prompt
+            else:
+                default_prompt = get_prompt_from_db(
+                    'images_background_change_default',
+                    " Change only the background without modifying the ornament."
+                )
+                final_prompt = user_prompt + \
+                    (" " + default_prompt if user_prompt else default_prompt)
+
+            base_prompt = get_prompt_from_db(
+                'images_background_change_base',
+                "Change the background of this ornament. {final_prompt}",
+                final_prompt=final_prompt
+            )
+
+            generated_bytes = None
+            if has_genai:
+                client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+                model_name = "gemini-2.5-flash-image-preview"
+
+                contents = [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+                    {"text": base_prompt}
+                ]
+                if bg_b64:
+                    contents.append(
+                        {"inline_data": {"mime_type": "image/jpeg", "data": bg_b64}})
+
+                config = types.GenerateContentConfig(
+                    response_modalities=[types.Modality.IMAGE]
+                )
+
+                resp = client.models.generate_content(
+                    model=model_name, contents=contents, config=config
+                )
                 candidate = resp.candidates[0]
                 for part in candidate.content.parts:
                     if part.inline_data:
                         data = part.inline_data.data
-                        generated_bytes = (
-                            data if isinstance(data, bytes)
-                            else base64.b64decode(data)
-                        )
+                        generated_bytes = data if isinstance(
+                            data, bytes) else base64.b64decode(data)
                         break
-
                 if not generated_bytes:
-                    raise Exception("No image returned from Gemini")
-
+                    raise Exception(
+                        "Gemini response had no image inline_data")
             else:
-                raise Exception("Gemini SDK not available or misconfigured.")
+                if bg_b64:
+                    bg_img = Image.open(
+                        BytesIO(base64.b64decode(bg_b64))).convert("RGB")
+                    bg_img = bg_img.resize(ornament_img.size)
+                else:
+                    bg_img = Image.new(
+                        "RGB", ornament_img.size, bg_color or (255, 255, 255))
+                bg_img.paste(ornament_img, (0, 0),
+                             ornament_img.convert("RGBA"))
+                buf = BytesIO()
+                bg_img.save(buf, format="JPEG", quality=95)
+                generated_bytes = buf.getvalue()
 
-            # STEP 4: Save generated image locally
-            gen_dir = os.path.join(settings.MEDIA_ROOT, "generated_ornaments")
+            gen_dir = os.path.join(
+                settings.MEDIA_ROOT, "generated_ornaments")
             os.makedirs(gen_dir, exist_ok=True)
             local_generated_path = os.path.join(
-                gen_dir, f"generated_{ornament_img.name}")
-
+                gen_dir, f"generated_{ornament.name}")
             with open(local_generated_path, "wb") as f:
                 f.write(generated_bytes)
 
-            # STEP 5: Upload generated image to Cloudinary
             upload_result = cloudinary.uploader.upload(
                 local_generated_path,
-                folder="model_ornament",
-                public_id=f"ornament_generated_{os.path.splitext(ornament_img.name)[0]}",
+                folder="ornaments_bg_change",
+                public_id=f"ornament_bg_{os.path.splitext(ornament.name)[0]}",
                 overwrite=True
             )
             generated_url = upload_result['secure_url']
 
-            # STEP 6: Save to MongoDB
             ornament_doc = OrnamentMongo(
                 prompt=prompt,
                 uploaded_image_url=uploaded_url,
                 generated_image_url=generated_url,
                 uploaded_image_path=local_uploaded_path,
                 generated_image_path=local_generated_path,
-                type="model_with_ornament",
+                type="background_change",
                 user_id=user_id,
                 original_prompt=prompt
             )
             ornament_doc.save()
 
             return JsonResponse({
-                "status": "success",
-                "message": "Generated AI close-up model wearing ornament successfully.",
-                "prompt": prompt,
-                "measurements": measurements,
+                "success": True,
+                "message": "Background changed successfully",
                 "uploaded_image_url": uploaded_url,
                 "generated_image_url": generated_url,
+                "prompt": prompt,
                 "mongo_id": str(ornament_doc.id),
-                "type": "model_with_ornament"
-            }, status=200)
+                "type": "background_change"
+            })
 
         except Exception as e:
             traceback.print_exc()
-            return JsonResponse({"status": "error", "message": str(e)}, status=500)
+            return JsonResponse({"success": False, "error": str(e)})
 
-    return JsonResponse({"error": "Invalid request method. Use POST."}, status=405)
+    else:
+        return JsonResponse({"success": False, "error": "Invalid form data"})
+
+
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
+def generate_model_with_ornament(request):
+    # Get user from authentication middleware
+    user = request.user
+    user_id = str(user.id)
+
+    try:
+        ornament_img = request.FILES.get('ornament_image')
+        pose_img = request.FILES.get('pose_style')
+        prompt = request.POST.get('prompt', '')
+        print(prompt)
+        measurements = request.POST.get('measurements', '')
+        ornament_type = request.POST.get('ornament_type', '')
+        ornament_measurements = request.POST.get(
+            'ornament_measurements', '{}')
+        print(ornament_type, ornament_measurements)
+
+        if not ornament_img:
+            return Response({"error": "Please upload an ornament image."}, status=400)
+
+        # STEP 1: Save ornament locally
+        upload_dir = os.path.join(
+            settings.MEDIA_ROOT, "uploaded_ornaments")
+        os.makedirs(upload_dir, exist_ok=True)
+        local_uploaded_path = os.path.join(upload_dir, ornament_img.name)
+        with open(local_uploaded_path, "wb+") as dest:
+            for chunk in ornament_img.chunks():
+                dest.write(chunk)
+
+        # STEP 2: Upload ornament to Cloudinary
+        uploaded_result = cloudinary.uploader.upload(
+            local_uploaded_path,
+            folder="ornaments_originals",
+            public_id=f"ornament_original_{os.path.splitext(ornament_img.name)[0]}",
+            overwrite=True
+        )
+        uploaded_url = uploaded_result["secure_url"]
+
+        # Convert uploaded images to base64
+        ornament_b64 = base64.b64encode(
+            open(local_uploaded_path, "rb").read()).decode("utf-8")
+        pose_b64 = None
+        if pose_img:
+            pose_b64 = base64.b64encode(pose_img.read()).decode('utf-8')
+
+        if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == 'your_api_key_here':
+            raise Exception("GOOGLE_API_KEY not configured")
+
+        generated_bytes = None
+
+        if has_genai:
+            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+            model_name = "gemini-2.5-flash-image-preview"
+
+            contents = [
+                {"inline_data": {"mime_type": "image/jpeg", "data": ornament_b64}},
+            ]
+            if pose_b64:
+                contents.append(
+                    {"inline_data": {"mime_type": "image/jpeg", "data": pose_b64}}
+                )
+
+            # Parse ornament measurements
+            import json
+            try:
+                ornament_measurements_dict = json.loads(
+                    ornament_measurements) if ornament_measurements else {}
+            except:
+                ornament_measurements_dict = {}
+
+            # Build ornament type and measurements description
+            ornament_description = ""
+            if ornament_type:
+                ornament_description += f"This is a {ornament_type}. "
+            if ornament_measurements_dict:
+                measurements_text = ", ".join(
+                    [f"{key}: {value}" for key, value in ornament_measurements_dict.items() if value])
+                if measurements_text:
+                    ornament_description += f"Specific measurements: {measurements_text}. "
+
+            # Get prompt from database
+            from probackendapp.prompt_initializer import get_prompt_from_db
+            measurements_text = f"measurements: {measurements}. " if measurements else ""
+            default_prompt = (
+                "Generate a close-up, high-fashion portrait of an elegant Indian woman "
+                "wearing this 100% real accurate uploaded ornament. Focus tightly on the neckline and jewelry area according to the ornament. "
+                "Ensure the jewelry fits naturally and realistically on the model. "
+                "Lighting should be soft and natural, highlighting the sparkle of the jewelry and the model's features. "
+                "Use a shallow depth of field with a softly blurred background that hints at an elegant setting. "
+                "Do not include any watermark, text, or unnatural effects. "
+                f"{ornament_description}"
+                f"{measurements_text}Make sure to follow the measurements strictly.\n"
+                f"mandatory consideration details: {prompt}"
+            )
+            user_prompt = get_prompt_from_db(
+                'images_model_with_ornament',
+                default_prompt,
+                ornament_description=ornament_description,
+                measurements_text=measurements_text,
+                user_prompt=prompt
+            )
+            print("user_prompt", user_prompt)
+
+            contents.append({"text": user_prompt})
+
+            config = types.GenerateContentConfig(
+                response_modalities=[types.Modality.IMAGE]
+            )
+
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+
+            candidate = resp.candidates[0]
+            for part in candidate.content.parts:
+                if part.inline_data:
+                    data = part.inline_data.data
+                    generated_bytes = (
+                        data if isinstance(data, bytes)
+                        else base64.b64decode(data)
+                    )
+                    break
+
+            if not generated_bytes:
+                raise Exception("No image returned from Gemini")
+
+        else:
+            raise Exception("Gemini SDK not available or misconfigured.")
+
+        # STEP 4: Save generated image locally
+        gen_dir = os.path.join(settings.MEDIA_ROOT, "generated_ornaments")
+        os.makedirs(gen_dir, exist_ok=True)
+        local_generated_path = os.path.join(
+            gen_dir, f"generated_{ornament_img.name}")
+
+        with open(local_generated_path, "wb") as f:
+            f.write(generated_bytes)
+
+        # STEP 5: Upload generated image to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            local_generated_path,
+            folder="model_ornament",
+            public_id=f"ornament_generated_{os.path.splitext(ornament_img.name)[0]}",
+            overwrite=True
+        )
+        generated_url = upload_result['secure_url']
+
+        # STEP 6: Save to MongoDB
+        ornament_doc = OrnamentMongo(
+            prompt=prompt,
+            uploaded_image_url=uploaded_url,
+            generated_image_url=generated_url,
+            uploaded_image_path=local_uploaded_path,
+            generated_image_path=local_generated_path,
+            type="model_with_ornament",
+            user_id=user_id,
+            original_prompt=prompt
+        )
+        ornament_doc.save()
+
+        return JsonResponse({
+            "status": "success",
+            "message": "Generated AI close-up model wearing ornament successfully.",
+            "prompt": prompt,
+            "measurements": measurements,
+            "uploaded_image_url": uploaded_url,
+            "generated_image_url": generated_url,
+            "mongo_id": str(ornament_doc.id),
+            "type": "model_with_ornament"
+        }, status=200)
+
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({"status": "error", "message": str(e)}, status=500)
 
 
 # Assuming OrnamentMongo is imported
 # from your_app.models import OrnamentMongo
 
 
+@api_view(['POST'])
 @csrf_exempt
 @authenticate
 def generate_real_model_with_ornament(request):
@@ -1351,209 +1348,204 @@ def generate_real_model_with_ornament(request):
     Generate an AI image of a real uploaded model wearing the uploaded ornament.
     Ensures output is realistic, jewelry-focused, and high-quality.
     """
-    if request.method == 'POST':
-        # Get user from authentication middleware
-        user = request.user
-        user_id = str(user.id)
+    # Get user from authentication middleware
+    user = request.user
+    user_id = str(user.id)
 
-        try:
-            model_img = request.FILES.get('model_image')
-            ornament_img = request.FILES.get('ornament_image')
-            pose_img = request.FILES.get('pose_style')
-            prompt = request.POST.get('prompt', '')
-            measurements = request.POST.get('measurements', '')
-            ornament_type = request.POST.get('ornament_type', '')
-            ornament_measurements = request.POST.get(
-                'ornament_measurements', '{}')
+    try:
+        model_img = request.FILES.get('model_image')
+        ornament_img = request.FILES.get('ornament_image')
+        pose_img = request.FILES.get('pose_style')
+        prompt = request.POST.get('prompt', '')
+        measurements = request.POST.get('measurements', '')
+        ornament_type = request.POST.get('ornament_type', '')
+        ornament_measurements = request.POST.get(
+            'ornament_measurements', '{}')
 
-            if not model_img or not ornament_img:
-                return JsonResponse({"error": "Please upload both model and ornament images."}, status=400)
+        if not model_img or not ornament_img:
+            return Response({"error": "Please upload both model and ornament images."}, status=400)
 
-            # === STEP 1: Save images locally ===
-            model_dir = os.path.join(settings.MEDIA_ROOT, "uploaded_models")
-            ornament_dir = os.path.join(
-                settings.MEDIA_ROOT, "uploaded_ornaments")
-            os.makedirs(model_dir, exist_ok=True)
-            os.makedirs(ornament_dir, exist_ok=True)
+        # === STEP 1: Save images locally ===
+        model_dir = os.path.join(settings.MEDIA_ROOT, "uploaded_models")
+        ornament_dir = os.path.join(
+            settings.MEDIA_ROOT, "uploaded_ornaments")
+        os.makedirs(model_dir, exist_ok=True)
+        os.makedirs(ornament_dir, exist_ok=True)
 
-            local_model_path = os.path.join(model_dir, model_img.name)
-            local_ornament_path = os.path.join(ornament_dir, ornament_img.name)
+        local_model_path = os.path.join(model_dir, model_img.name)
+        local_ornament_path = os.path.join(ornament_dir, ornament_img.name)
 
-            # Save model image locally
-            with open(local_model_path, "wb+") as dest:
-                for chunk in model_img.chunks():
-                    dest.write(chunk)
+        # Save model image locally
+        with open(local_model_path, "wb+") as dest:
+            for chunk in model_img.chunks():
+                dest.write(chunk)
 
-            # Save ornament image locally
-            with open(local_ornament_path, "wb+") as dest:
-                for chunk in ornament_img.chunks():
-                    dest.write(chunk)
+        # Save ornament image locally
+        with open(local_ornament_path, "wb+") as dest:
+            for chunk in ornament_img.chunks():
+                dest.write(chunk)
 
-            # === STEP 2: Upload both to Cloudinary ===
-            model_upload = cloudinary.uploader.upload(
-                local_model_path,
-                folder="models_originals",
-                public_id=f"model_original_{os.path.splitext(model_img.name)[0]}",
-                overwrite=True
+        # === STEP 2: Upload both to Cloudinary ===
+        model_upload = cloudinary.uploader.upload(
+            local_model_path,
+            folder="models_originals",
+            public_id=f"model_original_{os.path.splitext(model_img.name)[0]}",
+            overwrite=True
+        )
+        ornament_upload = cloudinary.uploader.upload(
+            local_ornament_path,
+            folder="ornaments_originals",
+            public_id=f"ornament_original_{os.path.splitext(ornament_img.name)[0]}",
+            overwrite=True
+        )
+
+        model_url = model_upload["secure_url"]
+        ornament_url = ornament_upload["secure_url"]
+
+        # === STEP 3: Prepare images for AI model (Base64) ===
+        model_b64 = base64.b64encode(
+            open(local_model_path, "rb").read()).decode("utf-8")
+        ornament_b64 = base64.b64encode(
+            open(local_ornament_path, "rb").read()).decode("utf-8")
+        pose_b64 = base64.b64encode(pose_img.read()).decode(
+            "utf-8") if pose_img else None
+
+        if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == 'your_api_key_here':
+            raise Exception("GOOGLE_API_KEY not configured")
+
+        generated_bytes = None
+
+        # === STEP 4: Generate AI image ===
+        if has_genai:
+            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+            model_name = "gemini-2.5-flash-image-preview"
+
+            contents = [
+                {"inline_data": {"mime_type": "image/jpeg", "data": ornament_b64}},
+                {"inline_data": {"mime_type": "image/jpeg", "data": model_b64}},
+            ]
+            if pose_b64:
+                contents.append(
+                    {"inline_data": {"mime_type": "image/jpeg", "data": pose_b64}})
+
+            # Parse ornament measurements
+            import json
+            try:
+                ornament_measurements_dict = json.loads(
+                    ornament_measurements) if ornament_measurements else {}
+            except:
+                ornament_measurements_dict = {}
+
+            # Build ornament type and measurements description
+            ornament_description = ""
+            if ornament_type:
+                ornament_description += f"This is a {ornament_type}. "
+            if ornament_measurements_dict:
+                measurements_text = ", ".join(
+                    [f"{key}: {value}" for key, value in ornament_measurements_dict.items() if value])
+                if measurements_text:
+                    ornament_description += f"Specific measurements: {measurements_text}. "
+
+            # Get prompt from database
+            from probackendapp.prompt_initializer import get_prompt_from_db
+            measurements_text = f"Additional measurements: {measurements}. " if measurements else ""
+            default_prompt = (
+                "Generate a realistic, high-quality close-up image of the uploaded model wearing "
+                "the exact uploaded ornament. Keep the model's face fully intact and recognizable. "
+                "Ensure the ornament fits naturally and realistically on the model. "
+                "Generate a background suitable for both the model and the ornament. "
+                "Lighting should be soft, natural, and elegant. "
+                "Focus tightly on the jewelry area. "
+                "Follow the pose from the uploaded pose image if provided. "
+                f"{ornament_description}"
+                f"{measurements_text}"
+                f"Additional user instructions: {prompt}"
             )
-            ornament_upload = cloudinary.uploader.upload(
-                local_ornament_path,
-                folder="ornaments_originals",
-                public_id=f"ornament_original_{os.path.splitext(ornament_img.name)[0]}",
-                overwrite=True
+            user_prompt = get_prompt_from_db(
+                'images_real_model_with_ornament',
+                default_prompt,
+                ornament_description=ornament_description,
+                measurements_text=measurements_text,
+                user_prompt=prompt
             )
 
-            model_url = model_upload["secure_url"]
-            ornament_url = ornament_upload["secure_url"]
+            contents.append({"text": user_prompt})
+            config = types.GenerateContentConfig(
+                response_modalities=[types.Modality.IMAGE])
 
-            # === STEP 3: Prepare images for AI model (Base64) ===
-            model_b64 = base64.b64encode(
-                open(local_model_path, "rb").read()).decode("utf-8")
-            ornament_b64 = base64.b64encode(
-                open(local_ornament_path, "rb").read()).decode("utf-8")
-            pose_b64 = base64.b64encode(pose_img.read()).decode(
-                "utf-8") if pose_img else None
+            resp = client.models.generate_content(
+                model=model_name, contents=contents, config=config)
+            candidate = resp.candidates[0]
 
-            if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == 'your_api_key_here':
-                raise Exception("GOOGLE_API_KEY not configured")
+            for part in candidate.content.parts:
+                if part.inline_data:
+                    data = part.inline_data.data
+                    generated_bytes = data if isinstance(
+                        data, bytes) else base64.b64decode(data)
+                    break
 
-            generated_bytes = None
+            if not generated_bytes:
+                raise Exception("No image returned from Gemini")
 
-            # === STEP 4: Generate AI image ===
-            if has_genai:
-                client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-                model_name = "gemini-2.5-flash-image-preview"
+        else:
+            raise Exception(
+                "Gemini SDK not available. Please install or configure it.")
 
-                contents = [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": ornament_b64}},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": model_b64}},
-                ]
-                if pose_b64:
-                    contents.append(
-                        {"inline_data": {"mime_type": "image/jpeg", "data": pose_b64}})
+        # === STEP 5: Save generated image locally ===
+        generated_dir = os.path.join(
+            settings.MEDIA_ROOT, "generated_models")
+        os.makedirs(generated_dir, exist_ok=True)
+        local_generated_path = os.path.join(
+            generated_dir, f"generated_{model_img.name}")
 
-                # Parse ornament measurements
-                import json
-                try:
-                    ornament_measurements_dict = json.loads(
-                        ornament_measurements) if ornament_measurements else {}
-                except:
-                    ornament_measurements_dict = {}
+        with open(local_generated_path, "wb") as f:
+            f.write(generated_bytes)
 
-                # Build ornament type and measurements description
-                ornament_description = ""
-                if ornament_type:
-                    ornament_description += f"This is a {ornament_type}. "
-                if ornament_measurements_dict:
-                    measurements_text = ", ".join(
-                        [f"{key}: {value}" for key, value in ornament_measurements_dict.items() if value])
-                    if measurements_text:
-                        ornament_description += f"Specific measurements: {measurements_text}. "
+        # === STEP 6: Upload generated image to Cloudinary ===
+        upload_result = cloudinary.uploader.upload(
+            local_generated_path,
+            folder="real_model_output",
+            public_id=f"model_generated_{os.path.splitext(model_img.name)[0]}",
+            overwrite=True
+        )
+        generated_url = upload_result["secure_url"]
 
-                # Get prompt from database
-                from probackendapp.prompt_initializer import get_prompt_from_db
-                measurements_text = f"Additional measurements: {measurements}. " if measurements else ""
-                default_prompt = (
-                    "Generate a realistic, high-quality close-up image of the uploaded model wearing "
-                    "the exact uploaded ornament. Keep the model's face fully intact and recognizable. "
-                    "Ensure the ornament fits naturally and realistically on the model. "
-                    "Generate a background suitable for both the model and the ornament. "
-                    "Lighting should be soft, natural, and elegant. "
-                    "Focus tightly on the jewelry area. "
-                    "Follow the pose from the uploaded pose image if provided. "
-                    f"{ornament_description}"
-                    f"{measurements_text}"
-                    f"Additional user instructions: {prompt}"
-                )
-                user_prompt = get_prompt_from_db(
-                    'images_real_model_with_ornament',
-                    default_prompt,
-                    ornament_description=ornament_description,
-                    measurements_text=measurements_text,
-                    user_prompt=prompt
-                )
+        # === STEP 7: Save to MongoDB ===
+        ornament_doc = OrnamentMongo(
+            prompt=prompt,
+            model_image_url=model_url,  # main input model image
+            uploaded_image_url=ornament_url,  # optionally add this field in your model
+            generated_image_url=generated_url,
+            uploaded_image_path=local_model_path,
+            generated_image_path=local_generated_path,
+            type="real_model_with_ornament",
+            user_id=user_id,
+            original_prompt=prompt
+        )
+        ornament_doc.save()
 
-                contents.append({"text": user_prompt})
-                config = types.GenerateContentConfig(
-                    response_modalities=[types.Modality.IMAGE])
+        # === STEP 8: Return response ===
+        return JsonResponse({
+            "status": "success",
+            "message": "Generated AI image of the model wearing ornament successfully.",
+            "prompt": prompt,
+            "measurements": measurements,
+            "model_image_url": model_url,
+            "ornament_image_url": ornament_url,
+            "generated_image_url": generated_url,
+            "mongo_id": str(ornament_doc.id),
+            "type": "real_model_with_ornament"
+        }, status=200)
 
-                resp = client.models.generate_content(
-                    model=model_name, contents=contents, config=config)
-                candidate = resp.candidates[0]
-
-                for part in candidate.content.parts:
-                    if part.inline_data:
-                        data = part.inline_data.data
-                        generated_bytes = data if isinstance(
-                            data, bytes) else base64.b64decode(data)
-                        break
-
-                if not generated_bytes:
-                    raise Exception("No image returned from Gemini")
-
-            else:
-                raise Exception(
-                    "Gemini SDK not available. Please install or configure it.")
-
-            # === STEP 5: Save generated image locally ===
-            generated_dir = os.path.join(
-                settings.MEDIA_ROOT, "generated_models")
-            os.makedirs(generated_dir, exist_ok=True)
-            local_generated_path = os.path.join(
-                generated_dir, f"generated_{model_img.name}")
-
-            with open(local_generated_path, "wb") as f:
-                f.write(generated_bytes)
-
-            # === STEP 6: Upload generated image to Cloudinary ===
-            upload_result = cloudinary.uploader.upload(
-                local_generated_path,
-                folder="real_model_output",
-                public_id=f"model_generated_{os.path.splitext(model_img.name)[0]}",
-                overwrite=True
-            )
-            generated_url = upload_result["secure_url"]
-
-            # === STEP 7: Save to MongoDB ===
-            ornament_doc = OrnamentMongo(
-                prompt=prompt,
-                model_image_url=model_url,  # main input model image
-                uploaded_image_url=ornament_url,  # optionally add this field in your model
-                generated_image_url=generated_url,
-                uploaded_image_path=local_model_path,
-                generated_image_path=local_generated_path,
-                type="real_model_with_ornament",
-                user_id=user_id,
-                original_prompt=prompt
-            )
-            ornament_doc.save()
-
-            # === STEP 8: Return response ===
-            return JsonResponse({
-                "status": "success",
-                "message": "Generated AI image of the model wearing ornament successfully.",
-                "prompt": prompt,
-                "measurements": measurements,
-                "model_image_url": model_url,
-                "ornament_image_url": ornament_url,
-                "generated_image_url": generated_url,
-                "mongo_id": str(ornament_doc.id),
-                "type": "real_model_with_ornament"
-            }, status=200)
-
-        except Exception as e:
-            traceback.print_exc()
-            return JsonResponse({"status": "error", "message": str(e)}, status=500)
-
-    return JsonResponse({"error": "Invalid request method. Use POST."}, status=405)
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({"status": "error", "message": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
 @authenticate
 def generate_campaign_shot_advanced(request):
-    if request.method != 'POST':
-        return JsonResponse({"error": "Invalid request method. Use POST."}, status=405)
-
     # Get user from authentication middleware
     user = request.user
     user_id = str(user.id)
@@ -1569,9 +1561,9 @@ def generate_campaign_shot_advanced(request):
 
         # === Validation ===
         if not ornaments:
-            return JsonResponse({"error": "Please upload at least one ornament image."}, status=400)
+            return Response({"error": "Please upload at least one ornament image."}, status=400)
         if model_type == 'real_model' and not model_img:
-            return JsonResponse({"error": "Please upload a model image for Real Model option."}, status=400)
+            return Response({"error": "Please upload a model image for Real Model option."}, status=400)
 
         # === Upload ornaments to Cloudinary & encode ===
         ornament_urls = []
@@ -1959,6 +1951,7 @@ def generate_campaign_shot_advanced(request):
 #         return JsonResponse({"status": "error", "message": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
 @authenticate
 def regenerate_image(request):
@@ -1967,8 +1960,6 @@ def regenerate_image(request):
     Works for all image types. Combines the original prompt with the new prompt.
     Stores the regenerated image in the same collection with parent_image_id reference.
     """
-    if request.method != 'POST':
-        return JsonResponse({"error": "Invalid request method. Use POST."}, status=405)
 
     # Get user from authentication middleware
     user = request.user
@@ -1982,10 +1973,10 @@ def regenerate_image(request):
         print(new_prompt)
 
         if not image_id:
-            return JsonResponse({"error": "image_id is required"}, status=400)
+            return Response({"error": "image_id is required"}, status=400)
 
         if not new_prompt:
-            return JsonResponse({"error": "New prompt is required"}, status=400)
+            return Response({"error": "New prompt is required"}, status=400)
 
         # Validate MongoDB ObjectId format before attempting to use it
         # ObjectId must be exactly 24 hex characters
@@ -2002,7 +1993,7 @@ def regenerate_image(request):
             return JsonResponse({"error": "Image record not found"}, status=404)
         except Exception as e:
             # This should rarely happen now due to format validation above
-            return JsonResponse({"error": f"Invalid image_id: {str(e)}"}, status=400)
+            return Response({"error": f"Invalid image_id: {str(e)}"}, status=400)
 
         # Verify that the image belongs to the user (security check)
         if prev_doc.user_id != user_id:

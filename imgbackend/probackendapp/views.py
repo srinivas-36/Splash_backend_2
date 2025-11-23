@@ -19,7 +19,7 @@ from datetime import timezone
 from .models import Project, Collection, CollectionItem, GeneratedImage
 from .utils import request_suggestions
 from mongoengine.errors import DoesNotExist
-from django.http import JsonResponse
+from rest_framework.response import Response
 from .utils import request_suggestions, call_gemini_api, parse_gemini_response
 from common.middleware import authenticate
 # -------------------------
@@ -117,7 +117,7 @@ def project_setup_description(request, project_id):
 # Step 2: User selects / refines → Generate final moodboard prompts
 # -------------------------
 # from django.shortcuts import render, redirect
-# from django.http import JsonResponse
+# from django.http import Response
 # from mongoengine.errors import DoesNotExist
 # import json
 # from .models import Project, Collection, CollectionItem
@@ -412,7 +412,7 @@ except ImportError:
 
 # def generate_ai_images(request, collection_id):
 #     if request.method != "POST":
-#         return JsonResponse({"error": "Invalid request method."})
+#         return Response({"error": "Invalid request method."})
 
 #     try:
 #         collection = Collection.objects.get(id=collection_id)
@@ -452,18 +452,18 @@ except ImportError:
 #                 generated_images.append(upload_result['secure_url'])
 
 #         else:
-#             return JsonResponse({"error": "Gemini SDK not available."})
+#             return Response({"error": "Gemini SDK not available."})
 
-#         return JsonResponse({"images": generated_images})
+#         return Response({"images": generated_images})
 
 #     except Exception as e:
 #         traceback.print_exc()
-#         return JsonResponse({"error": str(e)})
+#         return Response({"error": str(e)})
 
 
 def generate_ai_images(request, collection_id):
     if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method."})
+        return Response({"error": "Invalid request method."})
 
     try:
         collection = Collection.objects.get(id=collection_id)
@@ -547,7 +547,7 @@ def generate_ai_images(request, collection_id):
                     print("❌ Error generating image:", gen_err)
                     continue
         else:
-            return JsonResponse({"error": "Gemini SDK not available."})
+            return Response({"error": "Gemini SDK not available."})
 
         # ✅ Get already saved images from the collection
         saved_images = []
@@ -555,31 +555,31 @@ def generate_ai_images(request, collection_id):
             saved_images = [img.get(
                 "cloud") for img in collection.items[0].generated_model_images if "cloud" in img]
 
-        return JsonResponse({
+        return Response({
             "images": generated_images,
             "saved_images": saved_images
         })
 
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"error": str(e)})
+        return Response({"error": str(e)})
 
 
 # def save_generated_images(request, collection_id):
 #     if request.method != "POST":
-#         return JsonResponse({"success": False, "error": "Invalid request method."})
+#         return Response({"success": False, "error": "Invalid request method."})
 
 #     try:
 #         data = json.loads(request.body)
 #         selected_images = data.get("images", [])
 
 #         if not selected_images:
-#             return JsonResponse({"success": False, "error": "No images selected."})
+#             return Response({"success": False, "error": "No images selected."})
 
 #         collection = Collection.objects.get(id=collection_id)
 
 #         if not collection.items:
-#             return JsonResponse({"success": False, "error": "No items found in collection."})
+#             return Response({"success": False, "error": "No items found in collection."})
 
 #         item = collection.items[0]  # Assuming single item per collection
 
@@ -614,23 +614,23 @@ def generate_ai_images(request, collection_id):
 
 #         collection.save()
 
-#         return JsonResponse({
+#         return Response({
 #             "success": True,
 #             "saved": saved_images,
 #             "skipped_duplicates": len(selected_images) - len(saved_images)
 #         })
 
 #     except DoesNotExist:
-#         return JsonResponse({"success": False, "error": "Collection not found."})
+#         return Response({"success": False, "error": "Collection not found."})
 #     except Exception as e:
 #         traceback.print_exc()
-#         return JsonResponse({"success": False, "error": str(e)})
+#         return Response({"success": False, "error": str(e)})
 
 
 @authenticate
 def save_generated_images(request, collection_id):
     if request.method != "POST":
-        return JsonResponse({"success": False, "error": "Invalid request method."})
+        return Response({"success": False, "error": "Invalid request method."})
 
     try:
         data = json.loads(request.body)
@@ -638,7 +638,7 @@ def save_generated_images(request, collection_id):
 
         collection = Collection.objects.get(id=collection_id)
         if not collection.items:
-            return JsonResponse({"success": False, "error": "No items found in collection."})
+            return Response({"success": False, "error": "No items found in collection."})
 
         item = collection.items[0]
 
@@ -690,17 +690,17 @@ def save_generated_images(request, collection_id):
         except Exception as history_error:
             print(f"Error tracking model selection history: {history_error}")
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "total_selected": len(selected_images),
             "stored_images": len(updated_images)
         })
 
     except Collection.DoesNotExist:
-        return JsonResponse({"success": False, "error": "Collection not found."})
+        return Response({"success": False, "error": "Collection not found."})
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)})
+        return Response({"success": False, "error": str(e)})
 
 # -------------------------
 # Collection detail view
@@ -722,18 +722,18 @@ def upload_product_images_page(request, collection_id):
 @authenticate
 def upload_product_images_api(request, collection_id):
     if request.method != "POST":
-        return JsonResponse({"success": False, "error": "Invalid request method."})
+        return Response({"success": False, "error": "Invalid request method."})
 
     try:
         collection = Collection.objects.get(id=collection_id)
         if not collection.items:
-            return JsonResponse({"success": False, "error": "No items found in collection."})
+            return Response({"success": False, "error": "No items found in collection."})
 
         item = collection.items[0]  # assuming single item per collection
         uploaded_files = request.FILES.getlist("images")
 
         if not uploaded_files:
-            return JsonResponse({"success": False, "error": "No images uploaded."})
+            return Response({"success": False, "error": "No images uploaded."})
 
         local_dir = os.path.join(settings.MEDIA_ROOT, "product_images")
         os.makedirs(local_dir, exist_ok=True)
@@ -792,11 +792,11 @@ def upload_product_images_api(request, collection_id):
         except Exception as history_error:
             print(f"Error tracking product upload history: {history_error}")
 
-        return JsonResponse({"success": True, "count": len(new_product_images)})
+        return Response({"success": True, "count": len(new_product_images)})
 
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)})
+        return Response({"success": False, "error": str(e)})
 
 
 def generate_product_model_page(request, collection_id):
@@ -817,7 +817,7 @@ def generate_product_model_page(request, collection_id):
         })
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)}, status=500)
+        return Response({"success": False, "error": str(e)}, status=500)
 
 
 @csrf_exempt
@@ -835,10 +835,10 @@ def generate_product_model_api(request, collection_id):
         prompt_text = request.POST.get("prompt")
 
         if not all([product_url, model_url, prompt_text]):
-            return JsonResponse({"success": False, "error": "Missing data."})
+            return Response({"success": False, "error": "Missing data."})
 
         if not settings.GOOGLE_API_KEY:
-            return JsonResponse({"success": False, "error": "GOOGLE_API_KEY not configured."})
+            return Response({"success": False, "error": "GOOGLE_API_KEY not configured."})
 
         # ✅ Initialize Gemini client
         client = genai.Client(api_key=settings.GOOGLE_API_KEY)
@@ -877,7 +877,7 @@ def generate_product_model_api(request, collection_id):
                 break
 
         if not generated_bytes:
-            return JsonResponse({"success": False, "error": "Gemini did not return an image."})
+            return Response({"success": False, "error": "Gemini did not return an image."})
 
         # Save locally
         output_dir = os.path.join("media", "composite_images", str(
@@ -902,12 +902,12 @@ def generate_product_model_api(request, collection_id):
             "path": local_path
         }
 
-        return JsonResponse({"success": True, "image": result})
+        return Response({"success": True, "image": result})
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)}, status=500)
+        return Response({"success": False, "error": str(e)}, status=500)
 
 
 # @csrf_exempt
@@ -932,11 +932,11 @@ def generate_product_model_api(request, collection_id):
 #         model_local_path = body.get("model_local_path")
 #         print(model_local_path)
 #         if not os.path.exists(model_local_path):
-#             return JsonResponse({"success": False, "error": "Local model image not found."})
+#             return Response({"success": False, "error": "Local model image not found."})
 
 #         # Ensure prompts exist
 #         if not hasattr(item, "generated_prompts") or not item.generated_prompts:
-#             return JsonResponse({"success": False, "error": "No generated prompts found."})
+#             return Response({"success": False, "error": "No generated prompts found."})
 
 #         # Read model image once
 #         with open(model_local_path, "rb") as f:
@@ -1047,15 +1047,13 @@ def generate_product_model_api(request, collection_id):
 
 #         # Save collection after all images generated
 #         collection.save()
-#         return JsonResponse({"success": True, "message": "All product model images generated successfully."})
+#         return Response({"success": True, "message": "All product model images generated successfully."})
 
 #     except Exception as e:
 #         traceback.print_exc()
-#         return JsonResponse({"success": False, "error": str(e)}, status=500)
+#         return Response({"success": False, "error": str(e)}, status=500)
 
 
-@csrf_exempt
-@authenticate
 def generate_all_product_model_images(request, collection_id):
     """
     Generate AI images for all product images in a collection using the selected model image
@@ -1071,7 +1069,7 @@ def generate_all_product_model_images(request, collection_id):
     from google import genai
     from google.genai import types
     from django.conf import settings
-    from django.http import JsonResponse
+    # Use rest_framework.response.Response (already imported at top of file)
 
     try:
         # ---------------------------
@@ -1082,16 +1080,16 @@ def generate_all_product_model_images(request, collection_id):
 
         # Get the selected model from the collection
         if not hasattr(item, 'selected_model') or not item.selected_model:
-            return JsonResponse({"success": False, "error": "No model selected. Please select a model first."})
+            return Response({"success": False, "error": "No model selected. Please select a model first."})
 
         selected_model = item.selected_model
         model_local_path = selected_model.get("local")
 
         if not model_local_path or not os.path.exists(model_local_path):
-            return JsonResponse({"success": False, "error": "Selected model image not found on server."})
+            return Response({"success": False, "error": "Selected model image not found on server."})
 
         if not hasattr(item, "generated_prompts") or not item.generated_prompts:
-            return JsonResponse({"success": False, "error": "No generated prompts found."})
+            return Response({"success": False, "error": "No generated prompts found."})
 
         # ---------------------------
         # 2. Read model image once
@@ -1306,7 +1304,7 @@ Follow this specific style prompt: {prompt_text}"""
         total_generated = sum(len(p.generated_images)
                               for p in item.product_images)
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "message": f"All product model images generated successfully ({total_generated} images).",
             "total_generated": total_generated,
@@ -1314,7 +1312,7 @@ Follow this specific style prompt: {prompt_text}"""
 
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)}, status=500)
+        return Response({"success": False, "error": str(e)}, status=500)
 
 
 @csrf_exempt
@@ -1334,7 +1332,6 @@ def regenerate_product_model_image(request, collection_id):
     from datetime import datetime
     from google import genai
     from google.genai import types
-    from django.http import JsonResponse
 
     try:
         data = json.loads(request.body)
@@ -1348,7 +1345,7 @@ def regenerate_product_model_image(request, collection_id):
         if not (product_image_path and generated_image_path):
             print("Missing parameters", product_image_path,
                   generated_image_path, new_prompt)
-            return JsonResponse({"success": False, "error": "Missing parameters"}, status=400)
+            return Response({"success": False, "error": "Missing parameters"}, status=400)
 
         # Load collection and item
         collection = Collection.objects.get(id=collection_id)
@@ -1386,7 +1383,7 @@ def regenerate_product_model_image(request, collection_id):
                 break
 
         if not target_generated:
-            return JsonResponse({"success": False, "error": "Generated image not found"}, status=404)
+            return Response({"success": False, "error": "Generated image not found"}, status=404)
 
         # --- Google GenAI setup ---
         client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -1401,12 +1398,12 @@ def regenerate_product_model_image(request, collection_id):
                 item, 'selected_model') else None
 
         if not model_to_use:
-            return JsonResponse({"success": False, "error": "No model specified for regeneration"})
+            return Response({"success": False, "error": "No model specified for regeneration"})
 
         # Load model image
         model_local_path = model_to_use.get("local")
         if not model_local_path or not os.path.exists(model_local_path):
-            return JsonResponse({"success": False, "error": "Model image not found"})
+            return Response({"success": False, "error": "Model image not found"})
 
         with open(model_local_path, "rb") as f:
             model_bytes = f.read()
@@ -1414,7 +1411,7 @@ def regenerate_product_model_image(request, collection_id):
 
         # Load product image
         if not os.path.exists(product_image_path):
-            return JsonResponse({"success": False, "error": "Product image not found"})
+            return Response({"success": False, "error": "Product image not found"})
 
         with open(product_image_path, "rb") as f:
             product_bytes = f.read()
@@ -1496,7 +1493,7 @@ def regenerate_product_model_image(request, collection_id):
                 break
 
         if not generated_bytes:
-            return JsonResponse({"success": False, "error": "No image generated by GenAI"})
+            return Response({"success": False, "error": "No image generated by GenAI"})
 
         # --- Save new regenerated image locally ---
         new_filename = f"{uuid.uuid4()}_regenerated.png"
@@ -1563,7 +1560,7 @@ def regenerate_product_model_image(request, collection_id):
         except Exception as history_error:
             print(f"Error tracking regeneration history: {history_error}")
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "url": cloud_url,
             "local_path": local_output_path,
@@ -1579,4 +1576,4 @@ def regenerate_product_model_image(request, collection_id):
 
     except Exception as e:
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)}, status=500)
+        return Response({"success": False, "error": str(e)}, status=500)

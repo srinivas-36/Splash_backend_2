@@ -1,9 +1,7 @@
 import re
 from cloudinary.utils import cloudinary_url
 from .models import Project, ProjectInvite, ProjectMember, ImageGenerationHistory
-from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
 from django.shortcuts import get_object_or_404
 from mongoengine.errors import DoesNotExist
 from django.conf import settings
@@ -25,13 +23,16 @@ from .views import (
     regenerate_product_model_image
 )
 from common.middleware import authenticate
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
 
 # -------------------------
 # Project API Views
 # -------------------------
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_projects_list(request):
     """Get projects where the user is a team member"""
@@ -94,15 +95,16 @@ def api_projects_list(request):
                     ]
                 })
 
-        return JsonResponse({'projects': projects_data})
+        return Response({'projects': projects_data})
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 def api_project_detail(request, project_id):
     """Get a specific project"""
     try:
@@ -171,16 +173,16 @@ def api_project_detail(request, project_id):
 
                 project_data['collection']['items'].append(item_data)
 
-        return JsonResponse(project_data)
+        return Response(project_data)
     except DoesNotExist:
-        return JsonResponse({'error': 'Project not found'}, status=404)
+        return Response({'error': 'Project not found'}, status=404)
     except Exception as e:
         print(e)
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_create_project(request):
     """Create a new project"""
@@ -191,7 +193,7 @@ def api_create_project(request):
         about = data.get('about', '')
 
         if not name:
-            return JsonResponse({'error': 'Project name is required'}, status=400)
+            return Response({'error': 'Project name is required'}, status=400)
 
         project = Project(name=name, about=about)
         project.save()
@@ -204,7 +206,7 @@ def api_create_project(request):
             user.projects.append(project)
             user.save()
 
-        return JsonResponse({
+        return Response({
             'id': str(project.id),
             'name': project.name,
             'about': project.about,
@@ -221,11 +223,11 @@ def api_create_project(request):
         })
     except Exception as e:
         print(e)
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
+@api_view(['PUT'])
 @csrf_exempt
-@require_http_methods(["PUT"])
 @authenticate
 def api_update_project(request, project_id):
     """Update a project"""
@@ -244,13 +246,13 @@ def api_update_project(request, project_id):
             new_status = data['status'].lower()
 
             if new_status not in valid_statuses:
-                return JsonResponse({'error': 'Invalid status value'}, status=400)
+                return Response({'error': 'Invalid status value'}, status=400)
 
             project.status = new_status
 
         project.save()
 
-        return JsonResponse({
+        return Response({
             'id': str(project.id),
             'name': project.name,
             'about': project.about,
@@ -258,31 +260,32 @@ def api_update_project(request, project_id):
             'created_at': project.created_at.isoformat(),
         })
     except DoesNotExist:
-        return JsonResponse({'error': 'Project not found'}, status=404)
+        return Response({'error': 'Project not found'}, status=404)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
+@api_view(['DELETE'])
 @csrf_exempt
-@require_http_methods(["DELETE"])
 @authenticate
 def api_delete_project(request, project_id):
     """Delete a project"""
     try:
         project = Project.objects.get(id=project_id)
         project.delete()
-        return JsonResponse({'success': True})
+        return Response({'success': True})
     except DoesNotExist:
-        return JsonResponse({'error': 'Project not found'}, status=404)
+        return Response({'error': 'Project not found'}, status=404)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 # -------------------------
 # Collection API Views
 # -------------------------
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_collection_detail(request, collection_id):
     """Get collection details"""
@@ -335,19 +338,19 @@ def api_collection_detail(request, collection_id):
 
             collection_data['items'].append(item_data)
 
-        return JsonResponse(collection_data)
+        return Response(collection_data)
     except DoesNotExist:
-        return JsonResponse({'error': 'Collection not found'}, status=404)
+        return Response({'error': 'Collection not found'}, status=404)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 # -------------------------
 # Workflow API Views (wrapper around existing views)
 # -------------------------
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 def api_project_setup_description(request, project_id):
     """API wrapper for project setup description including target audience and campaign season"""
     try:
@@ -360,13 +363,13 @@ def api_project_setup_description(request, project_id):
 
         # Validate description
         if not description:
-            return JsonResponse({'error': 'Description is required'}, status=400)
+            return Response({'error': 'Description is required'}, status=400)
 
         # Get or create project
         try:
             project = Project.objects.get(id=project_id)
         except DoesNotExist:
-            return JsonResponse({'error': 'Project not found'}, status=404)
+            return Response({'error': 'Project not found'}, status=404)
 
         # Get or create collection
         collection = Collection.objects(project=project).first()
@@ -431,7 +434,7 @@ def api_project_setup_description(request, project_id):
             'items': [item_data]
         }
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'collection_id': str(collection.id),
             'collection': collection_data
@@ -440,11 +443,11 @@ def api_project_setup_description(request, project_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 def api_upload_workflow_image(request, project_id, collection_id):
     """Upload images immediately when user selects them in workflow"""
     try:
@@ -459,7 +462,7 @@ def api_upload_workflow_image(request, project_id, collection_id):
         auth_header = request.META.get('HTTP_AUTHORIZATION')
         if not auth_header or not auth_header.startswith('Bearer '):
             print("DEBUG: No valid authorization header")
-            return JsonResponse({'error': 'Authorization required'}, status=401)
+            return Response({'error': 'Authorization required'}, status=401)
 
         try:
             token = auth_header.split(' ')[1]
@@ -468,12 +471,12 @@ def api_upload_workflow_image(request, project_id, collection_id):
             user = User.objects(id=payload.get('id')).first()
             if not user:
                 print("DEBUG: User not found")
-                return JsonResponse({'error': 'User not found'}, status=404)
+                return Response({'error': 'User not found'}, status=404)
             user_id = str(user.id)
             print(f"DEBUG: User authenticated: {user_id}")
         except Exception as auth_error:
             print(f"DEBUG: Authentication failed: {str(auth_error)}")
-            return JsonResponse({'error': 'Authentication failed'}, status=401)
+            return Response({'error': 'Authentication failed'}, status=401)
 
         # Get the collection
         try:
@@ -481,12 +484,12 @@ def api_upload_workflow_image(request, project_id, collection_id):
             print(f"DEBUG: Collection found: {collection.id}")
         except DoesNotExist:
             print("DEBUG: Collection not found")
-            return JsonResponse({'error': 'Collection not found'}, status=404)
+            return Response({'error': 'Collection not found'}, status=404)
 
         # Get the first item
         if not collection.items:
             print("DEBUG: No collection items found")
-            return JsonResponse({'error': 'No collection items found'}, status=404)
+            return Response({'error': 'No collection items found'}, status=404)
 
         item = collection.items[0]
         print(f"DEBUG: Collection item found")
@@ -503,7 +506,7 @@ def api_upload_workflow_image(request, project_id, collection_id):
         if not uploaded_files or not category:
             print(
                 f"DEBUG: Missing files or category - files: {len(uploaded_files)}, category: {category}")
-            return JsonResponse({'error': 'No images or category provided'}, status=400)
+            return Response({'error': 'No images or category provided'}, status=400)
 
         # Normalize category (convert plural to singular)
         category_mapping = {
@@ -520,7 +523,7 @@ def api_upload_workflow_image(request, project_id, collection_id):
         if normalized_category not in ['theme', 'background', 'pose', 'location', 'color']:
             print(
                 f"DEBUG: Invalid category: {category} (normalized: {normalized_category})")
-            return JsonResponse({'error': 'Invalid category'}, status=400)
+            return Response({'error': 'Invalid category'}, status=400)
 
         # Use the normalized category for the rest of the function
         category = normalized_category
@@ -595,7 +598,7 @@ def api_upload_workflow_image(request, project_id, collection_id):
                 'category': img.category
             })
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'uploaded_images': response_data,
             'message': f'Successfully uploaded {len(uploaded_images)} {category} image(s)'
@@ -605,11 +608,11 @@ def api_upload_workflow_image(request, project_id, collection_id):
         import traceback
         print(f"DEBUG: Exception occurred in upload_workflow_image: {str(e)}")
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 def api_project_setup_select(request, project_id, collection_id):
     """API wrapper for project setup select - saves user selections and generates prompts"""
     try:
@@ -633,11 +636,11 @@ def api_project_setup_select(request, project_id, collection_id):
         try:
             collection = Collection.objects.get(id=collection_id)
         except DoesNotExist:
-            return JsonResponse({'error': 'Collection not found'}, status=404)
+            return Response({'error': 'Collection not found'}, status=404)
 
         # Get the first item
         if not collection.items:
-            return JsonResponse({'error': 'No collection items found'}, status=404)
+            return Response({'error': 'No collection items found'}, status=404)
 
         item = collection.items[0]
 
@@ -875,7 +878,7 @@ Generate prompts for the following 4 types. Respond ONLY in valid JSON:
         print("✅ Prompts generated and saved successfully")
         print(f"Generated prompts: {ai_response}")
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'selected': {
                 'themes': item.selected_themes,
@@ -893,7 +896,7 @@ Generate prompts for the following 4 types. Respond ONLY in valid JSON:
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 # -------------------------
 # Image Generation API Views (wrapper around existing views)
@@ -901,21 +904,26 @@ Generate prompts for the following 4 types. Respond ONLY in valid JSON:
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
 def api_generate_ai_images(request, collection_id):
     """API wrapper for generate AI images"""
     return generate_ai_images(request, collection_id)
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
 def api_save_generated_images(request, collection_id):
     """API wrapper for save generated images"""
     return save_generated_images(request, collection_id)
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
 @authenticate
 def api_upload_product_images(request, collection_id):
     """API wrapper for upload product images"""
@@ -923,14 +931,18 @@ def api_upload_product_images(request, collection_id):
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
 def api_generate_all_product_model_images(request, collection_id):
     """API wrapper for generate all product model images"""
     return generate_all_product_model_images(request, collection_id)
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
 def api_regenerate_product_model_image(request, collection_id):
     """API wrapper for regenerate product model image"""
     return regenerate_product_model_image(request, collection_id)
@@ -941,24 +953,26 @@ def api_regenerate_product_model_image(request, collection_id):
 # -------------------------
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@csrf_exempt
+@authenticate
 def api_upload_real_models(request, collection_id):
     """Upload real model images"""
     if request.method != "POST":
-        return JsonResponse({"success": False, "error": "Invalid request method."})
+        return Response({"success": False, "error": "Invalid request method."})
 
     try:
         import cloudinary.uploader
 
         collection = Collection.objects.get(id=collection_id)
         if not collection.items:
-            return JsonResponse({"success": False, "error": "No items found in collection."})
+            return Response({"success": False, "error": "No items found in collection."})
 
         item = collection.items[0]
         uploaded_files = request.FILES.getlist("images")
 
         if not uploaded_files:
-            return JsonResponse({"success": False, "error": "No images uploaded."})
+            return Response({"success": False, "error": "No images uploaded."})
 
         local_dir = os.path.join(settings.MEDIA_ROOT, "model_images", "real")
         os.makedirs(local_dir, exist_ok=True)
@@ -992,7 +1006,7 @@ def api_upload_real_models(request, collection_id):
 
         collection.save()
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "count": len(new_real_models),
             "models": new_real_models
@@ -1001,16 +1015,18 @@ def api_upload_real_models(request, collection_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)})
+        return Response({"success": False, "error": str(e)})
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
+@authenticate
 def api_get_all_models(request, collection_id):
     """Get all models (AI generated and real uploaded)"""
     try:
         collection = Collection.objects.get(id=collection_id)
         if not collection.items:
-            return JsonResponse({"success": False, "error": "No items found in collection."})
+            return Response({"success": False, "error": "No items found in collection."})
 
         item = collection.items[0]
 
@@ -1019,7 +1035,7 @@ def api_get_all_models(request, collection_id):
         selected_model = item.selected_model if hasattr(
             item, 'selected_model') else None
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "ai_models": ai_models,
             "real_models": real_models,
@@ -1029,11 +1045,11 @@ def api_get_all_models(request, collection_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)})
+        return Response({"success": False, "error": str(e)})
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 def api_select_model(request, collection_id):
     """Select a single model (AI or Real)"""
     try:
@@ -1043,11 +1059,11 @@ def api_select_model(request, collection_id):
         model_data = data.get("model")
 
         if not model_type or not model_data:
-            return JsonResponse({"success": False, "error": "Invalid model data"})
+            return Response({"success": False, "error": "Invalid model data"})
 
         collection = Collection.objects.get(id=collection_id)
         if not collection.items:
-            return JsonResponse({"success": False, "error": "No items found in collection."})
+            return Response({"success": False, "error": "No items found in collection."})
 
         item = collection.items[0]
 
@@ -1061,7 +1077,7 @@ def api_select_model(request, collection_id):
 
         collection.save()
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "selected_model": item.selected_model
         })
@@ -1069,11 +1085,11 @@ def api_select_model(request, collection_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"success": False, "error": str(e)})
+        return Response({"success": False, "error": str(e)})
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_invite_member(request, project_id):
     """Only project owner can invite existing users"""
@@ -1086,37 +1102,37 @@ def api_invite_member(request, project_id):
         # Find project
         project = Project.objects(id=project_id).first()
         if not project:
-            return JsonResponse({"error": "Project not found"}, status=404)
+            return Response({"error": "Project not found"}, status=404)
 
         # Check if current user is an owner
         owner_member = next(
             (m for m in project.team_members if m.user.id == user.id and m.role == "owner"), None)
         if not owner_member:
-            return JsonResponse({"error": "Only project owner can invite members"}, status=403)
+            return Response({"error": "Only project owner can invite members"}, status=403)
 
         # Find invitee
         invitee = User.objects(email=invitee_email).first()
         if not invitee:
-            return JsonResponse({"error": "User with this email not found"}, status=404)
+            return Response({"error": "User with this email not found"}, status=404)
 
         # Check if already a team member
         already_member = any(
             m.user.id == invitee.id for m in project.team_members)
         if already_member:
-            return JsonResponse({"error": "User already part of the team"}, status=400)
+            return Response({"error": "User already part of the team"}, status=400)
 
         # Check if invite already sent
         existing_invite = ProjectInvite.objects(
             project=project, invitee=invitee, accepted=False).first()
         if existing_invite:
-            return JsonResponse({"error": "Invite already pending"}, status=400)
+            return Response({"error": "Invite already pending"}, status=400)
 
         # Create invite
         invite = ProjectInvite(
             project=project, inviter=user, invitee=invitee, role=role)
         invite.save()
 
-        return JsonResponse({
+        return Response({
             "message": "Invitation sent successfully",
             "invite_id": str(invite.id),
             "invitee": invitee.email,
@@ -1125,11 +1141,11 @@ def api_invite_member(request, project_id):
         }, status=201)
 
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_accept_invite(request, project_id):
     """Accept a pending project invite (legacy endpoint for specific project)"""
@@ -1140,7 +1156,7 @@ def api_accept_invite(request, project_id):
         invite = ProjectInvite.objects(
             project=project_id, invitee=user, accepted=False).first()
         if not invite:
-            return JsonResponse({"error": "No pending invite found"}, status=404)
+            return Response({"error": "No pending invite found"}, status=404)
 
         # Add user to project team
         project = invite.project
@@ -1157,7 +1173,7 @@ def api_accept_invite(request, project_id):
             user.projects.append(project)
             user.save()
 
-        return JsonResponse({
+        return Response({
             "message": "Invite accepted successfully",
             "project": project.name,
             "project_id": str(project.id),
@@ -1165,11 +1181,11 @@ def api_accept_invite(request, project_id):
         }, status=200)
 
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_accept_invite_by_id(request, invite_id):
     """Accept a pending project invite by invite ID"""
@@ -1180,7 +1196,7 @@ def api_accept_invite_by_id(request, invite_id):
         invite = ProjectInvite.objects(
             id=invite_id, invitee=user, accepted=False).first()
         if not invite:
-            return JsonResponse({"error": "Invitation not found or already accepted"}, status=404)
+            return Response({"error": "Invitation not found or already accepted"}, status=404)
 
         # Add user to project team
         project = invite.project
@@ -1197,7 +1213,7 @@ def api_accept_invite_by_id(request, invite_id):
             user.projects.append(project)
             user.save()
 
-        return JsonResponse({
+        return Response({
             "message": "Invitation accepted successfully",
             "project_name": project.name,
             "project_id": str(project.id),
@@ -1205,11 +1221,11 @@ def api_accept_invite_by_id(request, invite_id):
         }, status=200)
 
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_reject_invite(request, invite_id):
     """Reject a pending project invite"""
@@ -1220,21 +1236,21 @@ def api_reject_invite(request, invite_id):
         invite = ProjectInvite.objects(
             id=invite_id, invitee=user, accepted=False).first()
         if not invite:
-            return JsonResponse({"error": "Invitation not found or already processed"}, status=404)
+            return Response({"error": "Invitation not found or already processed"}, status=404)
 
         # Delete the invite
         invite.delete()
 
-        return JsonResponse({
+        return Response({
             "message": "Invitation rejected successfully"
         }, status=200)
 
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_list_invites(request, project_id):
     """Get pending invitations for a specific project"""
@@ -1249,11 +1265,11 @@ def api_list_invites(request, project_id):
         "role": inv.role,
         "created_at": inv.created_at.isoformat()
     } for inv in invites]
-    return JsonResponse({"pending_invites": data})
+    return Response({"pending_invites": data})
 
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_list_all_invites(request):
     """Get ALL pending invitations for the current user (across all projects)"""
@@ -1267,18 +1283,18 @@ def api_list_all_invites(request):
         "role": inv.role,
         "created_at": inv.created_at.isoformat()
     } for inv in invites]
-    return JsonResponse({"pending_invites": data})
+    return Response({"pending_invites": data})
 
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_available_users(request, project_id):
     """Get all users who are not yet members of this project"""
     try:
         project = Project.objects(id=project_id).first()
         if not project:
-            return JsonResponse({"error": "Project not found"}, status=404)
+            return Response({"error": "Project not found"}, status=404)
 
         # Get IDs of users already in the project
         member_ids = [str(member.user.id) for member in project.team_members]
@@ -1296,13 +1312,13 @@ def api_available_users(request, project_id):
                     "username": user.username
                 })
 
-        return JsonResponse({"available_users": available_users})
+        return Response({"available_users": available_users})
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_update_member_role(request, project_id):
     """Update a team member's role - only project owner can perform this action"""
@@ -1313,42 +1329,42 @@ def api_update_member_role(request, project_id):
         new_role = data.get("role")
 
         if not member_user_id or not new_role:
-            return JsonResponse({"error": "user_id and role are required"}, status=400)
+            return Response({"error": "user_id and role are required"}, status=400)
 
         # Validate role
         if new_role not in ["owner", "editor", "viewer"]:
-            return JsonResponse({"error": "Invalid role. Must be 'owner', 'editor', or 'viewer'"}, status=400)
+            return Response({"error": "Invalid role. Must be 'owner', 'editor', or 'viewer'"}, status=400)
 
         # Find project
         project = Project.objects(id=project_id).first()
         if not project:
-            return JsonResponse({"error": "Project not found"}, status=404)
+            return Response({"error": "Project not found"}, status=404)
 
         # Check if current user is an owner
         owner_member = next(
             (m for m in project.team_members if str(m.user.id) == str(user.id) and m.role == "owner"), None)
         if not owner_member:
-            return JsonResponse({"error": "Only project owner can update member roles"}, status=403)
+            return Response({"error": "Only project owner can update member roles"}, status=403)
 
         # Find the member to update
         member_to_update = next(
             (m for m in project.team_members if str(m.user.id) == str(member_user_id)), None)
         if not member_to_update:
-            return JsonResponse({"error": "Member not found in project"}, status=404)
+            return Response({"error": "Member not found in project"}, status=404)
 
         # Prevent owner from changing their own role
         if str(member_to_update.user.id) == str(user.id):
-            return JsonResponse({"error": "You cannot change your own role"}, status=400)
+            return Response({"error": "You cannot change your own role"}, status=400)
 
         # Prevent changing role of another owner
         if member_to_update.role == "owner":
-            return JsonResponse({"error": "Cannot change the role of another owner"}, status=400)
+            return Response({"error": "Cannot change the role of another owner"}, status=400)
 
         # Update the role
         member_to_update.role = new_role
         project.save()
 
-        return JsonResponse({
+        return Response({
             "message": "Member role updated successfully",
             "user_email": member_to_update.user.email,
             "new_role": new_role
@@ -1357,14 +1373,15 @@ def api_update_member_role(request, project_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
 # -------------------------
 # Recent History API Views
 # -------------------------
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_recent_history(request):
     """Get recent image generation history for the authenticated user"""
@@ -1483,7 +1500,7 @@ def api_recent_history(request):
         end_idx = start_idx + limit
         paginated_history = combined_history[start_idx:end_idx]
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'history': paginated_history,
             'pagination': {
@@ -1497,10 +1514,11 @@ def api_recent_history(request):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_recent_projects(request):
     """Get recent project activity for the authenticated user"""
@@ -1581,7 +1599,7 @@ def api_recent_projects(request):
         end_idx = start_idx + limit
         paginated_projects = user_projects[start_idx:end_idx]
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'projects': paginated_projects,
             'pagination': {
@@ -1595,10 +1613,11 @@ def api_recent_projects(request):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_recent_images(request):
     """Get the 5 most recent images from ImageGenerationHistory for the authenticated user"""
@@ -1625,7 +1644,7 @@ def api_recent_images(request):
                 'created_at': item.created_at.isoformat() if item.created_at else None,
             })
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'images': images_list,
             'count': len(images_list)
@@ -1634,10 +1653,11 @@ def api_recent_images(request):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_recent_project_history(request):
     """Get recent image generation history for projects only (no individual images)"""
@@ -1722,7 +1742,7 @@ def api_recent_project_history(request):
         end_idx = start_idx + limit
         paginated_history = history_list[start_idx:end_idx]
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'history': paginated_history,
             'pagination': {
@@ -1736,10 +1756,11 @@ def api_recent_project_history(request):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
+@csrf_exempt
 @authenticate
 def api_collection_history(request, collection_id):
     """Get image generation history for a specific collection, grouped by product images"""
@@ -1751,7 +1772,7 @@ def api_collection_history(request, collection_id):
         try:
             collection = Collection.objects.get(id=collection_id)
         except Collection.DoesNotExist:
-            return JsonResponse({'error': 'Collection not found'}, status=404)
+            return Response({'error': 'Collection not found'}, status=404)
 
         # Get the project associated with this collection
         project = collection.project if hasattr(
@@ -1867,7 +1888,7 @@ def api_collection_history(request, collection_id):
         # Sort by latest generation date (most recent first)
         result.sort(key=lambda x: x['latest_generation'] or '', reverse=True)
 
-        return JsonResponse({
+        return Response({
             'success': True,
             'collection_id': str(collection.id),
             'project_id': project_id,
@@ -1880,15 +1901,16 @@ def api_collection_history(request, collection_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        return Response({'error': str(e)}, status=500)
 
 
 # views.py
 
 
 @csrf_exempt
+@api_view(['POST'])
+@csrf_exempt
 @authenticate
-@require_http_methods(["POST"])
 def api_image_enhance(request):
     """Auto-enhance a Cloudinary image and store it in projects section with proper tracking."""
     try:
@@ -1899,16 +1921,16 @@ def api_image_enhance(request):
         generated_image_path = data.get("generated_image_path")
 
         if not image_url:
-            return JsonResponse({"error": "image_url is required"}, status=400)
+            return Response({"error": "image_url is required"}, status=400)
 
         if not collection_id:
-            return JsonResponse({"error": "collection_id is required"}, status=400)
+            return Response({"error": "collection_id is required"}, status=400)
 
         if not product_image_path:
-            return JsonResponse({"error": "product_image_path is required"}, status=400)
+            return Response({"error": "product_image_path is required"}, status=400)
 
         if not generated_image_path:
-            return JsonResponse({"error": "generated_image_path is required"}, status=400)
+            return Response({"error": "generated_image_path is required"}, status=400)
 
         user = request.user
         user_id = str(user.id)
@@ -1918,7 +1940,7 @@ def api_image_enhance(request):
             r"/upload/(?:v\d+/)?(.+?)(?:\.[a-zA-Z]{3,4})?$", image_url)
 
         if not match:
-            return JsonResponse({"error": "Invalid Cloudinary URL"}, status=400)
+            return Response({"error": "Invalid Cloudinary URL"}, status=400)
         public_id = match.group(1)
 
         # Generate enhanced URL using Cloudinary transformations
@@ -1942,7 +1964,7 @@ def api_image_enhance(request):
         try:
             collection = Collection.objects.get(id=collection_id)
             if not collection.items:
-                return JsonResponse({"error": "No collection items found"}, status=404)
+                return Response({"error": "No collection items found"}, status=404)
 
             item = collection.items[0]
             product_image = None
@@ -1954,7 +1976,7 @@ def api_image_enhance(request):
                     break
 
             if not product_image:
-                return JsonResponse({"error": "Product image not found"}, status=404)
+                return Response({"error": "Product image not found"}, status=404)
 
             # Find the specific generated image
             generated_image = None
@@ -1964,7 +1986,7 @@ def api_image_enhance(request):
                     break
 
             if not generated_image:
-                return JsonResponse({"error": "Generated image not found"}, status=404)
+                return Response({"error": "Generated image not found"}, status=404)
 
             # Create enhanced image entry
             enhanced_image_entry = {
@@ -2007,7 +2029,7 @@ def api_image_enhance(request):
                 }
             )
 
-            return JsonResponse({
+            return Response({
                 "success": True,
                 "enhanced_url": enhanced_url,
                 "enhanced_image": enhanced_image_entry,
@@ -2015,20 +2037,20 @@ def api_image_enhance(request):
             })
 
         except Collection.DoesNotExist:
-            return JsonResponse({"error": "Collection not found"}, status=404)
+            return Response({"error": "Collection not found"}, status=404)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return JsonResponse({"error": str(e)}, status=500)
+            return Response({"error": str(e)}, status=500)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['DELETE'])
 @csrf_exempt
-@require_http_methods(["DELETE"])
 @authenticate
 def api_remove_model(request, collection_id):
     """
@@ -2045,14 +2067,14 @@ def api_remove_model(request, collection_id):
         model = data.get("model")
 
         if not model_type or not model:
-            return JsonResponse({"error": "Model type and model details are required"}, status=400)
+            return Response({"error": "Model type and model details are required"}, status=400)
 
         collection = Collection.objects(id=collection_id).first()
         if not collection:
-            return JsonResponse({"error": "Collection not found"}, status=404)
+            return Response({"error": "Collection not found"}, status=404)
 
         if not collection.items:
-            return JsonResponse({"error": "No items found in this collection"}, status=404)
+            return Response({"error": "No items found in this collection"}, status=404)
 
         # For simplicity, assuming only one item per collection
         item = collection.items[0]
@@ -2063,7 +2085,7 @@ def api_remove_model(request, collection_id):
         elif model_type == "real":
             models_list = item.uploaded_model_images
         else:
-            return JsonResponse({"error": "Invalid model type"}, status=400)
+            return Response({"error": "Invalid model type"}, status=400)
 
         # Filter out the model to delete
         model_cloud = model.get("cloud")
@@ -2083,15 +2105,15 @@ def api_remove_model(request, collection_id):
             item.selected_model = {}
 
         collection.save()
-        return JsonResponse({"success": True, "message": "Model removed successfully"})
+        return Response({"success": True, "message": "Model removed successfully"})
 
     except Exception as e:
         print("Error removing model:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['DELETE'])
 @csrf_exempt
-@require_http_methods(["DELETE"])
 @authenticate
 def api_remove_product_image(request, collection_id):
     """
@@ -2107,20 +2129,20 @@ def api_remove_product_image(request, collection_id):
         product_image_path = data.get("product_image_path")
 
         if not product_image_url and not product_image_path:
-            return JsonResponse({"error": "Product image URL or path is required"}, status=400)
+            return Response({"error": "Product image URL or path is required"}, status=400)
 
         collection = Collection.objects(id=collection_id).first()
         if not collection:
-            return JsonResponse({"error": "Collection not found"}, status=404)
+            return Response({"error": "Collection not found"}, status=404)
 
         if not collection.items:
-            return JsonResponse({"error": "No items found in this collection"}, status=404)
+            return Response({"error": "No items found in this collection"}, status=404)
 
         # For simplicity, assuming only one item per collection
         item = collection.items[0]
 
         if not hasattr(item, "product_images") or not item.product_images:
-            return JsonResponse({"error": "No product images found in this collection"}, status=404)
+            return Response({"error": "No product images found in this collection"}, status=404)
 
         # Filter out the product image to delete
         new_product_images = []
@@ -2136,19 +2158,19 @@ def api_remove_product_image(request, collection_id):
         item.product_images = new_product_images
         collection.save()
 
-        return JsonResponse({"success": True, "message": "Product image removed successfully"})
+        return Response({"success": True, "message": "Product image removed successfully"})
 
     except Exception as e:
         print("Error removing product image:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
 # -----------------------------
 # Prompt Master API Views
 # -----------------------------
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_prompt_master_list(request):
     """Get all prompts - returns prompts from all categories"""
@@ -2196,7 +2218,7 @@ def api_prompt_master_list(request):
             set([p.category for p in PromptMaster.objects.all() if p.category]))
         all_categories.sort()
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "prompts": prompts_data,
             "categories": all_categories  # Include all available categories
@@ -2204,11 +2226,11 @@ def api_prompt_master_list(request):
 
     except Exception as e:
         print("Error fetching prompts:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_prompt_master_detail(request, prompt_id):
     """Get a specific prompt by ID"""
@@ -2234,17 +2256,17 @@ def api_prompt_master_detail(request, prompt_id):
             "metadata": prompt.metadata or {}
         }
 
-        return JsonResponse({"success": True, "prompt": prompt_data})
+        return Response({"success": True, "prompt": prompt_data})
 
     except PromptMaster.DoesNotExist:
-        return JsonResponse({"error": "Prompt not found"}, status=404)
+        return Response({"error": "Prompt not found"}, status=404)
     except Exception as e:
         print("Error fetching prompt:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_prompt_master_create(request):
     """Create a new prompt"""
@@ -2254,7 +2276,7 @@ def api_prompt_master_create(request):
 
         # Check if prompt_key already exists
         if PromptMaster.objects(prompt_key=data.get('prompt_key')).first():
-            return JsonResponse({"error": "Prompt key already exists"}, status=400)
+            return Response({"error": "Prompt key already exists"}, status=400)
 
         prompt = PromptMaster(
             prompt_key=data.get('prompt_key'),
@@ -2290,15 +2312,15 @@ def api_prompt_master_create(request):
             "metadata": prompt.metadata or {}
         }
 
-        return JsonResponse({"success": True, "prompt": prompt_data}, status=201)
+        return Response({"success": True, "prompt": prompt_data}, status=201)
 
     except Exception as e:
         print("Error creating prompt:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['PUT'])
 @csrf_exempt
-@require_http_methods(["PUT"])
 @authenticate
 def api_prompt_master_update(request, prompt_id):
     """Update an existing prompt"""
@@ -2350,17 +2372,17 @@ def api_prompt_master_update(request, prompt_id):
             "metadata": prompt.metadata or {}
         }
 
-        return JsonResponse({"success": True, "prompt": prompt_data})
+        return Response({"success": True, "prompt": prompt_data})
 
     except PromptMaster.DoesNotExist:
-        return JsonResponse({"error": "Prompt not found"}, status=404)
+        return Response({"error": "Prompt not found"}, status=404)
     except Exception as e:
         print("Error updating prompt:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['DELETE'])
 @csrf_exempt
-@require_http_methods(["DELETE"])
 @authenticate
 def api_prompt_master_delete(request, prompt_id):
     """Delete a prompt"""
@@ -2369,17 +2391,17 @@ def api_prompt_master_delete(request, prompt_id):
         prompt = PromptMaster.objects.get(id=prompt_id)
         prompt.delete()
 
-        return JsonResponse({"success": True, "message": "Prompt deleted successfully"})
+        return Response({"success": True, "message": "Prompt deleted successfully"})
 
     except PromptMaster.DoesNotExist:
-        return JsonResponse({"error": "Prompt not found"}, status=404)
+        return Response({"error": "Prompt not found"}, status=404)
     except Exception as e:
         print("Error deleting prompt:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['GET'])
 @csrf_exempt
-@require_http_methods(["GET"])
 @authenticate
 def api_prompt_master_get_by_key(request, prompt_key):
     """Get a prompt by its key"""
@@ -2400,17 +2422,17 @@ def api_prompt_master_get_by_key(request, prompt_key):
             "metadata": prompt.metadata or {}
         }
 
-        return JsonResponse({"success": True, "prompt": prompt_data})
+        return Response({"success": True, "prompt": prompt_data})
 
     except PromptMaster.DoesNotExist:
-        return JsonResponse({"error": "Prompt not found"}, status=404)
+        return Response({"error": "Prompt not found"}, status=404)
     except Exception as e:
         print("Error fetching prompt by key:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
+@api_view(['POST'])
 @csrf_exempt
-@require_http_methods(["POST"])
 @authenticate
 def api_prompt_master_initialize(request):
     """Initialize default prompts in the database"""
@@ -2418,7 +2440,7 @@ def api_prompt_master_initialize(request):
         from .prompt_initializer import initialize_default_prompts
         created_count, updated_count = initialize_default_prompts()
 
-        return JsonResponse({
+        return Response({
             "success": True,
             "message": "Prompts initialized successfully",
             "created": created_count,
@@ -2427,4 +2449,4 @@ def api_prompt_master_initialize(request):
 
     except Exception as e:
         print("Error initializing prompts:", str(e))
-        return JsonResponse({"error": str(e)}, status=500)
+        return Response({"error": str(e)}, status=500)

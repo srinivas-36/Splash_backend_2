@@ -5,14 +5,14 @@ Extended API views for advanced features:
 """
 
 from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
+from rest_framework.decorators import api_view
 from mongoengine.errors import DoesNotExist
 from .models import Collection
 from .permissions import require_collection_role, get_user_role_in_project
 from common.middleware import authenticate
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
 @authenticate
 def api_get_model_usage_stats(request, collection_id):
     """
@@ -86,7 +86,7 @@ def api_get_model_usage_stats(request, collection_id):
         }, status=500)
 
 
-@require_http_methods(["GET"])
+@api_view(['GET'])
 @authenticate
 def api_get_user_role(request, project_id):
     """
