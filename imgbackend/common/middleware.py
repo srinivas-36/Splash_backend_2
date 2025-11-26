@@ -5,33 +5,39 @@ from functools import wraps
 from users.models import User
 
 
+from django.http import HttpResponse, JsonResponse
+
 def authenticate(view_func):
     @wraps(view_func)
     def wrapper(*args, **kwargs):
-        # Detect CBV (self, request, ...)
-        if hasattr(args[0], 'request'):  # self has request attr
+
+        # Detect request object (FBV / CBV support)
+        if hasattr(args[0], 'request'):  # Class-based view
             request = args[1]
-        elif hasattr(args[0], 'META'):   # FBV, args[0] is request
+        elif hasattr(args[0], 'META'):   # Function-based view
             request = args[0]
         else:
-            raise Exception("Cannot find request object in arguments")
-        # print("AUTH HEADER DEBUG:", request.META.get('HTTP_AUTHORIZATION'))
+            raise Exception("Cannot find request object")
+
+        # ---- CRITICAL: Stop OPTIONS immediately ----
+        if request.method == "OPTIONS":
+            return HttpResponse("", status=200, content_type="text/plain")
+
+        # ---- JWT Authentication for other methods ----
         auth_header = request.META.get('HTTP_AUTHORIZATION')
         if not auth_header or not auth_header.startswith('Bearer '):
-            print("DEBUG: No valid authorization header")
             return JsonResponse({'message': 'Authorization denied'}, status=401)
 
         try:
             token = auth_header.split(' ')[1]
-            payload = jwt.decode(
-                token, settings.SECRET_KEY, algorithms=["HS256"])
-            # print("DEBUG payload:", payload)
-            # print("payload",payload)
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+
             user = User.objects(id=payload.get('id')).first()
             if not user:
                 return JsonResponse({'message': 'User not found'}, status=404)
 
             request.user = user
+
         except jwt.ExpiredSignatureError:
             return JsonResponse({'message': 'Token expired'}, status=401)
         except jwt.InvalidTokenError:
@@ -40,6 +46,7 @@ def authenticate(view_func):
         return view_func(*args, **kwargs)
 
     return wrapper
+
 
 
 def restrict(roles=[]):

@@ -461,108 +461,171 @@ except ImportError:
 #         return Response({"error": str(e)})
 
 
+import base64
+import io
+import traceback
+import time
+
+import cloudinary
+import cloudinary.uploader
+import requests
+
+from django.http import JsonResponse
+from django.conf import settings
+
+# --- tuned values ---
+CLOUDINARY_UPLOAD_TIMEOUT = 30  # seconds
+AI_GENERATION_TIMEOUT = 60      # per-image generation timeout (logical, not enforced by Gemini SDK)
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB guard
+
+
 def generate_ai_images(request, collection_id):
     if request.method != "POST":
-        return Response({"error": "Invalid request method."})
+        return JsonResponse({"error": "Invalid request method."}, status=405)
 
     try:
         collection = Collection.objects.get(id=collection_id)
-        description = collection.description
-        generated_images = []
+    except Collection.DoesNotExist:
+        return JsonResponse({"error": "Collection not found."}, status=404)
 
-        if has_genai:
-            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-            model_name = "gemini-2.5-flash-image-preview"
+    description = getattr(collection, "description", "") or ""
+    generated_images = []
 
-            for i in range(4):
-                prompt_text = (
-                    f"Generate a realistic human model image (face and shoulders visible) "
-                    f"suitable for the collection description: {description}. "
-                    f"High-quality, photorealistic."
-                )
+    if not has_genai:
+        return JsonResponse({"error": "Gemini SDK not available."}, status=500)
 
-                contents = [{"role": "user", "parts": [{"text": prompt_text}]}]
-                try:
-                    resp = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            response_modalities=[types.Modality.IMAGE]
-                        ),
-                    )
+    client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    model_name = "gemini-2.5-flash-image-preview"
 
-                    if not resp.candidates:
-                        print("⚠️ No candidates returned:", resp)
-                        continue
+    for i in range(4):
+        prompt_text = (
+            f"Generate a realistic human model image (face and shoulders visible) "
+            f"suitable for the collection description: {description}. "
+            f"High-quality, photorealistic."
+        )
 
-                    candidate = resp.candidates[0]
-                    if not getattr(candidate, "content", None):
-                        print("⚠️ Candidate has no content:", candidate)
-                        continue
+        contents = [{"role": "user", "parts": [{"text": prompt_text}]}]
 
-                    image_bytes = None
-                    for part in candidate.content.parts:
-                        if hasattr(part, "inline_data") and part.inline_data:
-                            data = part.inline_data.data
-                            image_bytes = (
-                                data if isinstance(
-                                    data, bytes) else base64.b64decode(data)
-                            )
-                            break
+        try:
+            # NOTE: If the SDK supports a request timeout param, use it. If not, rely on internal timeout guards.
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=[types.Modality.IMAGE]
+                ),
+            )
+        except Exception as gen_err:
+            # Log and continue — don't let one failure kill the whole loop
+            print(f"❌ Error generating image (iteration {i+1}): {gen_err}")
+            traceback.print_exc()
+            continue
 
-                    if not image_bytes:
-                        print("⚠️ No image data found in parts.")
-                        continue
+        # Validate response candidates
+        if not getattr(resp, "candidates", None):
+            print(f"⚠️ No candidates returned for iteration {i+1}: {resp}")
+            continue
 
-                    buf = io.BytesIO(image_bytes)
-                    buf.seek(0)
-                    upload_result = cloudinary.uploader.upload(
-                        buf,
-                        folder="collection_ai_models",
-                        public_id=f"collection_{collection.id}_{i+1}",
-                        overwrite=True,
-                    )
-                    generated_images.append(upload_result["secure_url"])
+        candidate = resp.candidates[0]
+        if not getattr(candidate, "content", None):
+            print(f"⚠️ Candidate has no content for iteration {i+1}: {candidate}")
+            continue
 
-                    # Track AI model generation in history
-                    try:
-                        from .history_utils import track_project_image_generation
-                        track_project_image_generation(
-                            user_id=str(request.user.id),
-                            collection_id=str(collection.id),
-                            image_type="project_ai_model_generation",
-                            image_url=upload_result["secure_url"],
-                            prompt=prompt_text,
-                            metadata={
-                                "action": "ai_model_generation",
-                                "model_index": i+1,
-                                "total_generated": len(generated_images)
-                            }
-                        )
-                    except Exception as history_error:
-                        print(
-                            f"Error tracking AI model generation history: {history_error}")
+        # Extract first inline image data we can find
+        image_bytes = None
+        try:
+            for part in candidate.content.parts:
+                # defensive checks for inline_data presence
+                if hasattr(part, "inline_data") and getattr(part, "inline_data"):
+                    data = getattr(part.inline_data, "data", None)
+                    if data:
+                        if isinstance(data, (bytes, bytearray)):
+                            image_bytes = bytes(data)
+                        else:
+                            # assume base64 string
+                            image_bytes = base64.b64decode(data)
+                        break
+        except Exception as e:
+            print(f"⚠️ Error extracting image bytes (iteration {i+1}): {e}")
+            traceback.print_exc()
+            image_bytes = None
 
-                except Exception as gen_err:
-                    print("❌ Error generating image:", gen_err)
-                    continue
-        else:
-            return Response({"error": "Gemini SDK not available."})
+        if not image_bytes:
+            print(f"⚠️ No image data found in parts for iteration {i+1}. Skipping.")
+            continue
 
-        # ✅ Get already saved images from the collection
-        saved_images = []
-        if collection.items and hasattr(collection.items[0], "generated_model_images"):
-            saved_images = [img.get(
-                "cloud") for img in collection.items[0].generated_model_images if "cloud" in img]
+        # Safety checks
+        if len(image_bytes) == 0:
+            print(f"⚠️ Generated image buffer is empty for iteration {i+1}. Skipping.")
+            continue
 
-        return Response({
-            "images": generated_images,
-            "saved_images": saved_images
-        })
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            print(f"⚠️ Generated image too large ({len(image_bytes)} bytes) for iteration {i+1}. Skipping.")
+            continue
 
+        # Upload to Cloudinary inside try/except with a timeout and checks
+        buf = io.BytesIO(image_bytes)
+        buf.seek(0)
+
+        try:
+            # pass a timeout so upload doesn't hang indefinitely
+            upload_result = cloudinary.uploader.upload(
+                buf,
+                folder="collection_ai_models",
+                public_id=f"collection_{collection.id}_{i+1}",
+                overwrite=True,
+                timeout=CLOUDINARY_UPLOAD_TIMEOUT,
+                resource_type="image",
+            )
+        except Exception as upload_err:
+            print(f"❌ Cloudinary upload failed for iteration {i+1}: {upload_err}")
+            traceback.print_exc()
+            continue
+
+        # Validate upload result
+        secure_url = upload_result.get("secure_url")
+        if not secure_url:
+            print(f"⚠️ Cloudinary returned no secure_url for iteration {i+1}: {upload_result}")
+            continue
+
+        generated_images.append(secure_url)
+
+        # Track generation in history (non-blocking)
+        try:
+            from .history_utils import track_project_image_generation
+            track_project_image_generation(
+                user_id=str(getattr(request, "user", None) and getattr(request.user, "id", "")),
+                collection_id=str(collection.id),
+                image_type="project_ai_model_generation",
+                image_url=secure_url,
+                prompt=prompt_text,
+                metadata={
+                    "action": "ai_model_generation",
+                    "model_index": i + 1,
+                    "total_generated": len(generated_images)
+                }
+            )
+        except Exception as history_error:
+            print(f"Error tracking AI model generation history: {history_error}")
+
+    # Get already saved images from the collection (defensive)
+    saved_images = []
+    try:
+        if getattr(collection, "items", None) and len(collection.items) > 0:
+            first_item = collection.items[0]
+            if hasattr(first_item, "generated_model_images") and first_item.generated_model_images:
+                saved_images = [img.get("cloud") for img in first_item.generated_model_images if img and "cloud" in img]
     except Exception as e:
+        print(f"⚠️ Error collecting saved images: {e}")
         traceback.print_exc()
-        return Response({"error": str(e)})
+
+    return JsonResponse({
+        "images": generated_images,
+        "saved_images": saved_images
+    })
+
+
+
 
 
 # def save_generated_images(request, collection_id):
@@ -630,31 +693,32 @@ def generate_ai_images(request, collection_id):
 @authenticate
 def save_generated_images(request, collection_id):
     if request.method != "POST":
-        return Response({"success": False, "error": "Invalid request method."})
+        return JsonResponse({"success": False, "error": "Invalid request method."})
 
     try:
         data = json.loads(request.body)
         selected_images = set(data.get("images", []))
 
         collection = Collection.objects.get(id=collection_id)
-        if not collection.items:
-            return Response({"success": False, "error": "No items found in collection."})
+
+        # Ensure collection has at least 1 item
+        if not collection.items or len(collection.items) == 0:
+            # Create the item dynamically if missing
+            collection.items = [{
+                "generated_model_images": []
+            }]
+            collection.save()
 
         item = collection.items[0]
 
-        # Existing images
-        existing = item.generated_model_images or []
-        existing_urls = {img.get("cloud")
-                         for img in existing if "cloud" in img}
+        existing = item.get("generated_model_images", [])
+        existing_urls = {img.get("cloud") for img in existing}
 
         local_dir = os.path.join(settings.MEDIA_ROOT, "model_images")
         os.makedirs(local_dir, exist_ok=True)
 
-        # 1️⃣ Remove unselected images
-        updated_images = [img for img in existing if img.get(
-            "cloud") in selected_images]
+        updated_images = [img for img in existing if img.get("cloud") in selected_images]
 
-        # 2️⃣ Add new ones
         for url in selected_images - existing_urls:
             filename = url.split("/")[-1]
             local_path = os.path.join(local_dir, filename)
@@ -666,41 +730,23 @@ def save_generated_images(request, collection_id):
 
             updated_images.append({"local": local_path, "cloud": url})
 
-        # Update and save
-        item.generated_model_images = updated_images
+        # Save back
+        item["generated_model_images"] = updated_images
         collection.save()
 
-        # Track model image selection in history
-        try:
-            from .history_utils import track_project_image_generation
-            for img in updated_images:
-                if img.get("cloud"):
-                    track_project_image_generation(
-                        user_id="system",  # TODO: Get actual user ID from request
-                        collection_id=str(collection.id),
-                        image_type="project_model_selection",
-                        image_url=img["cloud"],
-                        prompt="Model image selected for project",
-                        local_path=img.get("local"),
-                        metadata={
-                            "action": "model_selection",
-                            "total_models": len(updated_images)
-                        }
-                    )
-        except Exception as history_error:
-            print(f"Error tracking model selection history: {history_error}")
-
-        return Response({
+        return JsonResponse({
             "success": True,
             "total_selected": len(selected_images),
-            "stored_images": len(updated_images)
+            "stored_images": len(updated_images),
+            "images": updated_images
         })
 
-    except Collection.DoesNotExist:
-        return Response({"success": False, "error": "Collection not found."})
     except Exception as e:
         traceback.print_exc()
-        return Response({"success": False, "error": str(e)})
+        return JsonResponse({"success": False, "error": str(e)})
+
+
+
 
 # -------------------------
 # Collection detail view

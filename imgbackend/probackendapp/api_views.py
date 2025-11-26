@@ -903,13 +903,26 @@ Generate prompts for the following 4 types. Respond ONLY in valid JSON:
 # -------------------------
 
 
-@csrf_exempt
-@api_view(['POST'])
+
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from common.middleware import authenticate
+from .views import generate_ai_images   # adjust import if needed
+
 @csrf_exempt
 @authenticate
 def api_generate_ai_images(request, collection_id):
-    """API wrapper for generate AI images"""
+
+    # Allow OPTIONS preflight
+    if request.method == "OPTIONS":
+        return HttpResponse("", status=200, content_type="text/plain")
+
+    # Only POST allowed
+    if request.method != "POST":
+        return JsonResponse({"error": "Invalid request method."}, status=405)
+
     return generate_ai_images(request, collection_id)
+
 
 
 @csrf_exempt

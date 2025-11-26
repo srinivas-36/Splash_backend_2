@@ -32,7 +32,9 @@ cloudinary.config(
     secure=True
 )
 
-GOOGLE_API_KEY = "AIzaSyBDxOUjKGoEd2STxXXMJmnSd1MF0hCMx0E"
+# Keep a sane default for local development but prefer environment variable
+DEFAULT_GOOGLE_API_KEY = "AIzaSyBDxOUjKGoEd2STxXXMJmnSd1MF0hCMx0E"
+GOOGLE_API_KEY = config('GOOGLE_API_KEY', default=DEFAULT_GOOGLE_API_KEY)
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -43,12 +45,12 @@ SECRET_KEY = 'django-insecure-5lq_q+khpb)*(zl57h+0ha*2ptm%_ruj9unofbc4v*z(^=af4@
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '[::1]']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '[::1]',"api.gosplash.ai","tarnika-frontend.vercel.app"]
 
 # user = os.environ["MONGO_USER"]
 # password = os.environ["MONGO_PASSWORD"]
 uri = f"mongodb+srv://bhargavraavi4444_db_user:bhargav4444@cluster0.5dfeawc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-# uri = f"mongodb+srv://swethab9392_db_user:Swetha2003@cluster0.qtnsdub.mongodb.net/?appName=Cluster0"
+#uri = f"mongodb+srv://swethab9392_db_user:Swetha2003@cluster0.qtnsdub.mongodb.net/?appName=Cluster0"
 
 # print("user", user)
 # print("passsweord", password)
@@ -85,14 +87,40 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
     # 'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_ALL_HEADERS = True
+CORS_ALLOW_ALL_METHODS = True
+
+CORS_ALLOW_NON_SIMPLE_HEADERS = True
+CORS_ALLOW_PRIVATE_NETWORK = True
+
+CORS_EXPOSE_HEADERS = ['*']
+CORS_PREFLIGHT_MAX_AGE = 86400
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+
+    # For local testing without ports
+    "http://localhost",
+    "http://127.0.0.1",
+
+    # Vercel frontend
+    "https://tarnika-frontend.vercel.app",
+]
+
+
 
 ROOT_URLCONF = 'imgbackend.urls'
 
@@ -166,11 +194,6 @@ STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-GOOGLE_API_KEY = config('GOOGLE_API_KEY', default='')
-if not GOOGLE_API_KEY:
-    import os
-    GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
-
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -178,18 +201,24 @@ if not GOOGLE_API_KEY:
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS settings for frontend integration
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_HEADERS = ["*"]
-CORS_ALLOW_METHODS = ["*"]
-CORS_EXPOSE_HEADERS = ["*"]
+
+
+# CSRF_TRUSTED_ORIGINS = [
+#     "http://localhost:3000",
+#     "http://127.0.0.1:3000",
+# ]
+
+
+
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://tarnika-frontend.vercel.app",
     "https://backend.gosplash.ai",
+    "https://api.gosplash.ai",   # <-- add this
 ]
+
 
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SECURE = False
